@@ -1,0 +1,4 @@
+tests/
+dist/
+trader/
+*.zip

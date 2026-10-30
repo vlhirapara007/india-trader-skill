@@ -40,28 +40,29 @@ Change any of them: `python3 india-setup/indtrader.py config --set risk_per_trad
 
 ## Web app (phone and desktop)
 
-`app/streamlit_app.py` is a mobile-friendly website built on the same code:
+A website on the same code, hosted free on Vercel: `app.py` (a small Flask API over the core) and `public/` (the page). It installs on your phone like an app.
 
-- **Stock**: search any NSE/BSE stock to see its chart with 20/50/200-day averages, trend, RSI, 52-week position, which setups fire, a full trade plan for your rules (entry, stop, target, exit time, quantity, Groww charges, breakeven), **price ranges** for 1 week, 1 month and 3 months with an honesty check, and the **odds** of target-first vs stop-first.
-- **Scan**: swing, positional, pre-market and live opening-range scans over Nifty 50 / 200, Bank Nifty, all NSE, all BSE.
-- **Market**: Nifty 50 and Bank Nifty today, Nifty 50 movers, upcoming holidays.
-- **Rules**: capital, loss limit, risk per trade, and losses/profits so far.
+- **Stock**: search any NSE/BSE stock to see its chart with 20/50/200-day averages, trend, RSI, 52-week position, which setups fire, and a trade plan for your rules drawn as a price ladder: target, buy-above, stop, quantity, net profit or loss after Groww charges, breakeven, exit time, how to place it in Groww, and the odds of target-first vs stop-first.
+- **Price ranges** for 1 week, 1 month and 3 months, with a check of how often past ranges held. These are ranges of possibility, **not predictions**.
+- **Scan**: swing, positional, pre-market and live opening-range scans over Nifty 50 / 200, Bank Nifty, all NSE, all BSE. Tap a hit to plan it.
+- **Market**: Nifty 50 and Bank Nifty today, the biggest Nifty 50 movers, market holidays.
+- **Rules**: capital, loss limit, risk per trade, losses and profits so far, saved on your phone.
 
-Price ranges are **not predictions**. They replay the stock's own last two years of daily moves 4,000 times and show where 80% and 50% of those replays ended. The honesty check re-runs this at 25 past dates and counts how often the real price landed inside the range.
+### Deploy on Vercel (free)
 
-### Deploy free on Streamlit Community Cloud
+1. Sign in at **vercel.com** with GitHub (vlhirapara007) and click **Add New → Project**.
+2. Import `vlhirapara007/india-trader-skill` (grant Vercel access to it if asked). Leave every setting as it is and click **Deploy**. Vercel finds `app.py` (Flask) and `public/` by itself; `vercel.json` puts the server in Mumbai (`bom1`).
+3. Optional but recommended: Vercel URLs are public, so add a password. In **Settings → Environment Variables** add `APP_PASSWORD`, then redeploy. The app asks for it once on each phone.
+4. Open the URL on your phone and choose **Add to Home Screen**.
 
-1. Go to **share.streamlit.io** and sign in with GitHub (vlhirapara007).
-2. **Create app** → *Deploy a public app from GitHub* → repo `vlhirapara007/india-trader-skill`, branch `main`, main file `app/streamlit_app.py`. Under *Advanced settings* pick Python 3.12.
-3. Deploy. Because the repo is private, the app is private too. Add viewers with **Share → invite by email**.
-4. Open the link on your phone and *Add to Home Screen*.
+Every push to `main` redeploys automatically.
 
-If the app can't download a stock list (NSE sometimes blocks cloud servers), run
-`python3 tools/snapshot_universes.py` on your computer, then commit and push
-`data/universe/`. The app falls back to those files.
+If the deployed app can't download a stock list (NSE sometimes blocks cloud servers), run
+`python3 tools/snapshot_universes.py` on your computer, then commit and push `data/universe/`.
+The app falls back to those files. Searching by exact symbol always works, even without a list.
 
-Run it locally: `pip install -r requirements.txt && streamlit run app/streamlit_app.py`.
-Demo mode with made-up prices (no internet needed): `INDTRADER_DEMO=1 streamlit run app/streamlit_app.py`.
+Run it locally: `pip install flask && flask --app app run`, then open http://127.0.0.1:5000.
+Demo mode with made-up prices (no internet needed): `INDTRADER_DEMO=1 flask --app app run`.
 
 ## Install
 

@@ -1,0 +1,14 @@
+{
+  "name": "India Trader",
+  "short_name": "Trader",
+  "description": "Trade plans for NSE and BSE stocks. Plans only, never places orders.",
+  "start_url": "/#stock",
+  "display": "standalone",
+  "background_color": "#F6F7F9",
+  "theme_color": "#2B3A8C",
+  "icons": [
+    {"src": "/icon-192.png", "sizes": "192x192", "type": "image/png"},
+    {"src": "/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any maskable"},
+    {"src": "/icon.svg", "sizes": "any", "type": "image/svg+xml"}
+  ]
+}

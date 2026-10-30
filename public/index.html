@@ -1,0 +1,151 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>India Trader</title>
+<meta name="description" content="Trade plans for NSE and BSE stocks: setups, entry, stop, target, quantity after charges, price ranges and odds.">
+<meta name="theme-color" content="#2B3A8C">
+<link rel="manifest" href="/manifest.webmanifest">
+<link rel="icon" href="/icon.svg" type="image/svg+xml">
+<link rel="apple-touch-icon" href="/icon-180.png">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-title" content="India Trader">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Schibsted+Grotesk:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="/style.css">
+</head>
+<body>
+<header class="top">
+  <div class="brand"><svg viewBox="0 0 32 32" aria-hidden="true"><rect x="5" y="9" width="5" height="14" rx="1.5"/><rect x="13.5" y="4" width="5" height="18" rx="1.5" class="hi"/><rect x="22" y="12" width="5" height="12" rx="1.5"/><path d="M4 27h24"/></svg>India Trader</div>
+  <button class="status" id="status" type="button" aria-live="polite"><span class="dot"></span><span id="status-text">Checking market…</span></button>
+</header>
+
+<div id="demo" class="demo" hidden>Demo mode: the prices here are generated, not real.</div>
+
+<main>
+  <!-- STOCK -->
+  <section id="view-stock" class="view" aria-labelledby="h-stock">
+    <h1 id="h-stock" class="sr">Stock</h1>
+    <div class="search">
+      <label for="q" class="sr">Search a stock</label>
+      <input id="q" type="search" autocomplete="off" spellcheck="false" placeholder="Search a stock: Reliance, TCS, 500325">
+      <ul id="suggest" class="suggest" role="listbox" hidden></ul>
+    </div>
+    <div id="recent" class="recent"></div>
+
+    <div id="stock-empty" class="empty">
+      <p class="lead">Look up any NSE or BSE stock.</p>
+      <p>You'll get its chart and trend, the setups firing on it, a trade plan sized to your rules after Groww charges, and the range its price has moved in before.</p>
+    </div>
+    <div id="stock-error" class="error" hidden></div>
+    <div id="stock" hidden>
+      <div class="quote">
+        <div>
+          <h2 id="s-name"></h2>
+          <p class="sub" id="s-sub"></p>
+        </div>
+        <div class="px">
+          <div id="s-price" class="price"></div>
+          <div id="s-change" class="chg"></div>
+        </div>
+      </div>
+      <div class="seg" id="chart-range" role="tablist" aria-label="Chart range">
+        <button data-r="today">Today</button><button data-r="22">1M</button><button data-r="126" class="on">6M</button><button data-r="252">1Y</button><button data-r="520">2Y</button>
+      </div>
+      <div id="chart" class="chart"></div>
+      <p class="legend"><span class="k k20"></span>20-day avg <span class="k k50"></span>50-day <span class="k k200"></span>200-day</p>
+
+      <h3>Numbers</h3>
+      <dl class="grid" id="s-stats"></dl>
+
+      <h3>Setups</h3>
+      <div id="s-setups"></div>
+
+      <h3 id="plan-h">Trade plan</h3>
+      <form id="plan-form" class="plan-form" autocomplete="off">
+        <div class="seg" id="mode" role="radiogroup" aria-label="Trade type">
+          <button type="button" data-m="intraday">Intraday</button><button type="button" data-m="swing" class="on">Swing</button><button type="button" data-m="positional">Positional</button>
+        </div>
+        <div class="fields">
+          <label>Buy above<input id="f-entry" inputmode="decimal" required></label>
+          <label>Stop loss<input id="f-stop" inputmode="decimal" required></label>
+          <label>Target<input id="f-target" inputmode="decimal" placeholder="auto"></label>
+        </div>
+        <p class="hint" id="f-hint"></p>
+      </form>
+      <div id="plan"></div>
+
+      <h3>Price ranges</h3>
+      <div id="ranges"></div>
+    </div>
+  </section>
+
+  <!-- SCAN -->
+  <section id="view-scan" class="view" hidden aria-labelledby="h-scan">
+    <h1 id="h-scan">Scan the market</h1>
+    <div class="fields two">
+      <label>Stocks
+        <select id="sc-uni">
+          <option value="nifty50">Nifty 50</option><option value="nifty200" selected>Nifty 200</option>
+          <option value="banknifty">Bank Nifty</option><option value="nse_all">All NSE (about 2,000)</option>
+          <option value="bse_all">All BSE (about 4,500)</option><option value="all">All India</option>
+        </select></label>
+      <label>Look for
+        <select id="sc-kind">
+          <option value="swing">Swing setups, 2–10 days</option><option value="positional">Positional, weeks to months</option>
+          <option value="premarket">Intraday candidates for today</option><option value="orb">Opening-range breakouts, live</option>
+        </select></label>
+    </div>
+    <p class="hint" id="sc-hint"></p>
+    <button id="sc-run" class="primary" type="button">Run scan</button>
+    <div id="sc-progress" class="progress" hidden><div></div></div>
+    <p class="hint" id="sc-meta"></p>
+    <ol id="sc-results" class="hits"></ol>
+  </section>
+
+  <!-- MARKET -->
+  <section id="view-market" class="view" hidden aria-labelledby="h-market">
+    <h1 id="h-market">Market today</h1>
+    <div id="mk-indices" class="indices"></div>
+    <h3>Nifty 50 movers</h3>
+    <div id="mk-movers" class="movers"></div>
+    <h3>Market holidays</h3>
+    <ul id="mk-holidays" class="plain"></ul>
+  </section>
+
+  <!-- RULES -->
+  <section id="view-rules" class="view" hidden aria-labelledby="h-rules">
+    <h1 id="h-rules">My rules</h1>
+    <p class="hint">Every plan is sized with these. They're saved on this phone only.</p>
+    <form id="rules" class="fields two" autocomplete="off">
+      <label>Capital (₹)<input name="capital" inputmode="numeric"></label>
+      <label>Stop all trading after losing (₹)<input name="drawdown" inputmode="numeric"></label>
+      <label>Risk per trade (₹, charges included)<input name="risk" inputmode="numeric"></label>
+      <label>Minimum reward : risk<input name="minrr" inputmode="decimal"></label>
+      <label>Losses so far (₹)<input name="loss" inputmode="numeric"></label>
+      <label>Profits so far (₹)<input name="gain" inputmode="numeric"></label>
+      <label>Trades taken today<input name="today" inputmode="numeric"></label>
+    </form>
+    <div id="acct" class="acct"></div>
+    <h3>Fixed rules</h3>
+    <ul id="fixed" class="plain"></ul>
+    <h3>Password</h3>
+    <p class="hint" id="pw-hint">Only needed if you set APP_PASSWORD on Vercel.</p>
+    <div class="fields two"><label>App password<input id="pw" type="password" autocomplete="current-password"></label></div>
+    <p class="fine">Not investment advice. Every plan is for you to check and place yourself; this app never places orders. Prices are from Yahoo Finance and can lag the exchange by a few minutes. Charts by <a href="https://www.tradingview.com/" rel="noopener">TradingView Lightweight Charts</a>.</p>
+  </section>
+</main>
+
+<nav class="tabs" aria-label="Sections">
+  <a href="#stock" data-v="stock"><svg viewBox="0 0 24 24"><circle cx="10.5" cy="10.5" r="6"/><path d="M15 15l5 5"/></svg>Stock</a>
+  <a href="#scan" data-v="scan"><svg viewBox="0 0 24 24"><path d="M3 12h3l3-7 4 14 3-7h5"/></svg>Scan</a>
+  <a href="#market" data-v="market"><svg viewBox="0 0 24 24"><path d="M4 20V10M10 20V4M16 20v-7M22 20H2"/></svg>Market</a>
+  <a href="#rules" data-v="rules"><svg viewBox="0 0 24 24"><path d="M5 7h14M5 12h9M5 17h5"/><circle cx="17" cy="17" r="2.5"/></svg>Rules</a>
+</nav>
+
+<script src="/vendor/lightweight-charts.standalone.production.js"></script>
+<script src="/app.js"></script>
+</body>
+</html>
