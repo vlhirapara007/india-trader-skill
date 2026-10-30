@@ -29,8 +29,8 @@ Change any of them: `python3 india-setup/indtrader.py config --set risk_per_trad
 | Skill | Status | What it does |
 |---|---|---|
 | `india-setup` | ready | Rules, IST market hours and holidays, Groww charges and breakeven, universes, price bars, account and loss-limit tracking |
-| `india-scanner` | next | Scans a universe for intraday (opening-range breakout) and swing/positional setups (breakouts, bull flags, pullbacks, oversold bounces) |
-| `india-plan` | planned | Turns a setup into a full trade plan: entry, stop, target, exit time, quantity after charges |
+| `india-scanner` | ready | Scans a universe for intraday (opening-range breakout) and swing/positional setups (breakouts, bull flags, pullbacks, oversold bounces) |
+| `india-plan` | next | Turns a setup into a full trade plan: entry, stop, target, exit time, quantity after charges |
 | `india-timemachine` | planned | Replays the plan 10,000 times from the stock's own bars and on every past day the setup fired |
 | `india-risk` | planned | PASS / BLOCK against your rules before you place anything |
 | `india-news` | planned | NSE/BSE corporate announcements and headlines for your watchlist |

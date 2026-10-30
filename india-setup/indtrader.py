@@ -145,6 +145,15 @@ def previous_trading_day(d, cfg=None):
     return d
 
 
+def last_session_close(t=None, cfg=None):
+    """When the most recent completed session closed (15:30 IST)."""
+    t = (t or now_ist()).astimezone(IST)
+    d = t.date()
+    if is_trading_day(d, cfg) and t.time() >= MARKET_CLOSE:
+        return dt.datetime.combine(d, MARKET_CLOSE, IST)
+    return dt.datetime.combine(previous_trading_day(d, cfg), MARKET_CLOSE, IST)
+
+
 def trading_days_between(a, b, cfg=None):
     """Trading days after a, up to and including b."""
     n, d = 0, a
@@ -244,6 +253,9 @@ DEFAULT_CONFIG = {
     "universe": "nifty200",
     "intraday_entry_window": "09:30-11:00",
     "intraday_flat_by": "15:10",   # square off yourself before the broker's auto square-off
+    "min_price": 20,               # skip penny stocks
+    "min_avg_traded_value_cr": 5,  # 20-day average daily traded value, Rs crore (liquidity)
+    "scan_workers": 8,             # parallel downloads while scanning
     "extra_holidays": {},          # {"2027-01-26": "Republic Day"} for years not built in
 }
 
@@ -738,6 +750,101 @@ def session_bars(bars, day=None):
     return out
 
 
+INTERVAL_MINUTES = {"1m": 1, "2m": 2, "5m": 5, "15m": 15, "30m": 30, "60m": 60, "1h": 60}
+
+
+def completed_bars(bars, interval, now=None):
+    """Drop bars that have not finished yet.
+
+    Yahoo includes the candle that is still forming (often with volume 0), and
+    during market hours the daily series includes today's unfinished day.
+    A rule like "a 5-minute candle CLOSES above X" must never see those.
+    """
+    now = (now or now_ist()).astimezone(IST)
+    out = []
+    for b in bars:
+        t = dt.datetime.fromisoformat(b["t"]).astimezone(IST)
+        if interval in INTERVAL_MINUTES:
+            end = t + dt.timedelta(minutes=INTERVAL_MINUTES[interval])
+            # the last candle of the day ends at 15:30 even if it started at 15:25
+            close_dt = dt.datetime.combine(t.date(), MARKET_CLOSE, IST)
+            if end > close_dt:
+                end = close_dt
+        elif interval == "1d":
+            end = dt.datetime.combine(t.date(), MARKET_CLOSE, IST)
+        else:
+            out.append(b)
+            continue
+        if end <= now:
+            out.append(b)
+    return out
+
+
+# --------------------------------------------------------------------------
+# Indicators (plain lists, oldest first; None until there is enough data)
+# --------------------------------------------------------------------------
+
+def sma(xs, n):
+    out, s = [], 0.0
+    for i, x in enumerate(xs):
+        s += x
+        if i >= n:
+            s -= xs[i - n]
+        out.append(s / n if i >= n - 1 else None)
+    return out
+
+
+def ema(xs, n):
+    out, k, e = [], 2.0 / (n + 1), None
+    for i, x in enumerate(xs):
+        if i < n - 1:
+            out.append(None)
+            continue
+        e = sum(xs[: n]) / n if i == n - 1 else x * k + e * (1 - k)
+        out.append(e)
+    return out
+
+
+def rsi(closes, n=14):
+    """Wilder's RSI."""
+    out = [None] * len(closes)
+    if len(closes) <= n:
+        return out
+    gains = losses = 0.0
+    for i in range(1, n + 1):
+        d = closes[i] - closes[i - 1]
+        gains += max(d, 0)
+        losses += max(-d, 0)
+    ag, al = gains / n, losses / n
+    out[n] = 100.0 if al == 0 else 100 - 100 / (1 + ag / al)
+    for i in range(n + 1, len(closes)):
+        d = closes[i] - closes[i - 1]
+        ag = (ag * (n - 1) + max(d, 0)) / n
+        al = (al * (n - 1) + max(-d, 0)) / n
+        out[i] = 100.0 if al == 0 else 100 - 100 / (1 + ag / al)
+    return out
+
+
+def atr(bars, n=14):
+    """Wilder's average true range over bar dicts {h, l, c}."""
+    out = [None] * len(bars)
+    trs = []
+    for i, b in enumerate(bars):
+        if i == 0:
+            trs.append(b["h"] - b["l"])
+        else:
+            pc = bars[i - 1]["c"]
+            trs.append(max(b["h"] - b["l"], abs(b["h"] - pc), abs(b["l"] - pc)))
+    if len(bars) < n:
+        return out
+    a = sum(trs[:n]) / n
+    out[n - 1] = a
+    for i in range(n, len(bars)):
+        a = (a * (n - 1) + trs[i]) / n
+        out[i] = a
+    return out
+
+
 def tick_round(price, tick=0.05, mode="nearest"):
     """NSE/BSE equities move in 5-paise ticks for most stocks. mode: nearest, down or up."""
     n = float(price) / tick
@@ -847,7 +954,8 @@ def cmd_universe(a):
 def cmd_bars(a):
     cfg = load_config()
     r = fetch_bars(a.symbol, a.exchange or cfg["exchange"], a.interval, a.range)
-    bars = r["bars"]
+    bars = r["bars"] if a.partial else completed_bars(r["bars"], a.interval)
+    r["bars"] = bars
     print("%s %s, %d bars of %s, last price %s, previous close %s"
           % (r["meta"]["symbol"], r["meta"]["exchange"], len(bars), a.interval, r["meta"]["price"], r["meta"]["prev_close"]))
     for b in bars[-a.show:]:
@@ -873,6 +981,7 @@ def main(argv=None):
     s = sub.add_parser("bars"); s.add_argument("symbol"); s.add_argument("--exchange", choices=["NSE", "BSE"])
     s.add_argument("--interval", default="5m"); s.add_argument("--range", default="5d")
     s.add_argument("--show", type=int, default=10); s.add_argument("--save", action="store_true")
+    s.add_argument("--partial", action="store_true", help="also show the candle that is still forming")
     s.set_defaults(fn=cmd_bars)
     a = p.parse_args(argv)
     try:
