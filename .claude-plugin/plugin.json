@@ -1,0 +1,10 @@
+{
+  "name": "india-trader-skill",
+  "description": "Claude skills for Indian stocks (NSE/BSE): intraday, swing, positional and long-term trade plans with Groww charges and a hard loss limit. Plans only, never places orders.",
+  "version": "0.1.0",
+  "author": {"name": "Vikrant Hirapara"},
+  "repository": "https://github.com/vlhirapara007/india-trader-skill",
+  "license": "MIT",
+  "keywords": ["nse", "bse", "nifty", "india", "intraday", "swing-trading", "groww"],
+  "skills": "./"
+}

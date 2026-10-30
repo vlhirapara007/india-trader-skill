@@ -1,0 +1,8 @@
+{
+  "$schema": "https://anthropic.com/claude-code/marketplace.schema.json",
+  "name": "india-trader-skill",
+  "description": "India Trader skill pack for Claude",
+  "owner": {"name": "Vikrant Hirapara"},
+  "plugins": [{"name": "india-trader-skill", "source": "./", "category": "productivity",
+               "description": "NSE/BSE trade plans: intraday, swing, positional, long-term, portfolio. Never places orders."}]
+}

@@ -1,0 +1,4 @@
+[{"SCRIP_CD":"500325","Scrip_Name":"Reliance Industries Ltd","Status":"Active","GROUP":"A ","FACE_VALUE":"10.00","ISIN_NUMBER":"INE002A01018","INDUSTRY":"Refineries & Marketing","scrip_id":"RELIANCE","Segment":"Equity"},
+ {"SCRIP_CD":"531001","Scrip_Name":"Bse Only Small Ltd","Status":"Active","GROUP":"X ","FACE_VALUE":"10.00","ISIN_NUMBER":"INE888Y01010","INDUSTRY":"Textiles","scrip_id":"BSEONLY","Segment":"Equity"},
+ {"SCRIP_CD":"539999","Scrip_Name":"Z Group Ltd","Status":"Active","GROUP":"Z ","FACE_VALUE":"10.00","ISIN_NUMBER":"INE777X01010","INDUSTRY":"Misc","scrip_id":"ZGRP","Segment":"Equity"},
+ {"SCRIP_CD":"500001","Scrip_Name":"Delisted Ltd","Status":"Delisted","GROUP":"A ","ISIN_NUMBER":"INE111A01010","scrip_id":"GONE","Segment":"Equity"}]
