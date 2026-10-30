@@ -313,3 +313,93 @@ class Copies(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class Plans(unittest.TestCase):
+    WHEN = dt.datetime(2026, 10, 30, 10, 0, tzinfo=it.IST)
+
+    def plan(self, *a, **k):
+        cfg = dict(it.DEFAULT_CONFIG, **k.pop("cfg", {}))
+        acct = k.pop("account", None) or it.account_state(cfg, [], dt.date(2026, 10, 30))
+        return it.build_plan(*a, cfg=cfg, account=acct, when=self.WHEN, **k)
+
+    def test_swing_plan_fits_the_risk_after_charges(self):
+        p = self.plan("TEST", 200, 190, "swing")
+        self.assertEqual(p["status"], "ok", p["blocks"])
+        self.assertEqual(p["qty"], 15)                     # 20 shares would lose Rs 200 + charges
+        self.assertLessEqual(p["loss_at_stop"], 200)
+        self.assertEqual(p["target"], 225.0)               # 2.5R for swing
+        self.assertEqual(p["exit_by"], "2026-11-16")       # 10 trading days, skipping Diwali 10 Nov
+        self.assertEqual(p["product"], "delivery")
+        self.assertGreaterEqual(p["reward_risk"], 1.5)
+
+    def test_intraday_plan(self):
+        p = self.plan("TEST", 500, 495, "intraday")
+        self.assertEqual(p["product"], "intraday")
+        self.assertEqual(p["exit_by"], "2026-10-30T15:10")
+        self.assertIn("CLOSES above 500.00", p["entry_rule"])
+        self.assertLessEqual(p["position_value"], 20000)   # cash only, no leverage
+
+    def test_plan_after_close_is_for_next_session(self):
+        cfg = dict(it.DEFAULT_CONFIG)
+        p = it.build_plan("TEST", 200, 190, "swing", cfg=cfg, account=it.account_state(cfg, []),
+                          when=dt.datetime(2026, 10, 30, 16, 0, tzinfo=it.IST))
+        self.assertEqual(p["date"], "2026-11-02")
+
+    def test_blocks(self):
+        self.assertIn("below the entry", self.plan("T", 100, 101)["blocks"][0])
+        self.assertIn("position cap", self.plan("MRF", 130000, 125000, "positional")["blocks"][0])
+        self.assertIn("even 1 share", self.plan("T", 9000, 8500, "swing")["blocks"][0])
+        self.assertTrue(any("trade-to-trade" in b for b in self.plan("T", 100, 98, "intraday", intraday_allowed=False)["blocks"]))
+        thin = self.plan("T", 1166, 1158, "intraday")
+        self.assertEqual(thin["status"], "blocked")
+        self.assertGreater(thin["min_target"], thin["target"])   # tells you what target would work
+
+    def test_halted_account_blocks_everything(self):
+        cfg = dict(it.DEFAULT_CONFIG)
+        acct = it.account_state(cfg, [{"status": "closed", "net_pnl": -2000, "entry_date": "2026-10-01"}])
+        p = self.plan("T", 200, 190, "swing", account=acct)
+        self.assertTrue(any("loss limit" in b for b in p["blocks"]))
+
+    def test_risk_shrinks_near_the_limit(self):
+        cfg = dict(it.DEFAULT_CONFIG)
+        acct = it.account_state(cfg, [{"status": "closed", "net_pnl": -1900, "entry_date": "2026-10-01"}],
+                                dt.date(2026, 10, 30))
+        p = self.plan("T", 200, 190, "swing", account=acct)
+        self.assertLessEqual(p["loss_at_stop"], 100)
+
+
+import math as _m
+
+FC_CLOSES = [1000 * _m.exp(0.0004 * i + 0.015 * _m.sin(i * 1.3) + 0.01 * _m.sin(i * 0.37)) for i in range(520)]
+
+
+class Forecast(unittest.TestCase):
+    CLOSES = FC_CLOSES
+
+    def test_ranges_are_ordered_and_widen(self):
+        r = it.price_ranges(self.CLOSES)
+        for h in (5, 21, 63):
+            x = r["ranges"][h]
+            self.assertTrue(x["p10"] <= x["p25"] <= x["p50"] <= x["p75"] <= x["p90"])
+        w = lambda h: r["ranges"][h]["p90"] - r["ranges"][h]["p10"]
+        self.assertLess(w(5), w(21))
+        self.assertLess(w(21), w(63))
+
+    def test_repeatable(self):
+        self.assertEqual(it.price_ranges(self.CLOSES), it.price_ranges(self.CLOSES))
+
+    def test_too_little_history(self):
+        self.assertIsNone(it.price_ranges(self.CLOSES[:30]))
+
+    def test_hit_rate_shape(self):
+        h = it.range_hit_rate(self.CLOSES)
+        self.assertGreater(h["checks"], 10)
+        self.assertTrue(0 <= h["hit_rate"] <= 100)
+
+    def test_path_odds_add_up(self):
+        rets = it.log_returns(self.CLOSES)
+        o = it.path_odds(rets, 100, 95, 110, 10)
+        self.assertAlmostEqual(o["target_first"] + o["stop_first"] + o["neither"], 100, places=0)
+        near = it.path_odds(rets, 100, 99.9, 200, 10)
+        self.assertGreater(near["stop_first"], 40)          # a stop 0.1% away gets hit a lot

@@ -245,7 +245,8 @@ DEFAULT_CONFIG = {
     "risk_per_trade": 200,         # Rs lost if the stop fills, charges included (1%)
     "max_trades_per_day": 3,
     "max_open_positions": 4,       # across intraday, swing and positional
-    "max_position_pct": 50,        # no single position over this % of equity
+    "max_position_pct": 50,        # no single overnight position over this % of equity
+    "intraday_max_position_pct": 100,  # intraday is closed the same day; still cash only, no leverage
     "min_reward_risk": 1.5,        # target must pay at least this many R after charges
     "max_charges_pct_of_risk": 25, # skip trades whose round-trip charges exceed this % of risk
     "broker": "groww",
@@ -694,7 +695,7 @@ YAHOO_MAX_RANGE = {"1m": "7d", "2m": "60d", "5m": "60d", "15m": "60d", "30m": "6
 
 def yahoo_chart_url(ysym, interval="5m", rng="5d", host=YAHOO_HOSTS[0]):
     return ("https://%s/v8/finance/chart/%s?range=%s&interval=%s&includePrePost=false"
-            % (host, urllib.parse.quote(ysym, safe="."), rng, interval))
+            % (host, urllib.parse.quote(ysym, safe=".^"), rng, interval))
 
 
 def parse_yahoo_chart(text):
@@ -727,7 +728,10 @@ def parse_yahoo_chart(text):
 
 def fetch_bars(symbol, exchange="NSE", interval="5m", rng="5d", fetch=None):
     """Bars for one stock. symbol may already carry .NS/.BO."""
-    ysym = symbol if symbol.upper().endswith((".NS", ".BO")) else yahoo_symbol(symbol, exchange)
+    if symbol.startswith("^") or symbol.upper().endswith((".NS", ".BO")):
+        ysym = symbol                     # an index (^NSEI) or already a Yahoo symbol
+    else:
+        ysym = yahoo_symbol(symbol, exchange)
     last = None
     for host in YAHOO_HOSTS:
         try:
@@ -855,6 +859,266 @@ def tick_round(price, tick=0.05, mode="nearest"):
     else:
         k = round(n)
     return round(k * tick, 2)
+
+
+# --------------------------------------------------------------------------
+# Trade plans
+# --------------------------------------------------------------------------
+
+MODES = {
+    # product, how long the trade may live, and what ends it
+    "intraday": {"product": "intraday", "max_days": 0, "rr": 2.0},
+    "swing": {"product": "delivery", "max_days": 10, "rr": 2.5},
+    "positional": {"product": "delivery", "max_days": 60, "rr": 3.0},
+}
+
+
+def plan_date(t=None, cfg=None):
+    """The session a new plan is for: today until 15:30 on a trading day, else the next one."""
+    t = (t or now_ist()).astimezone(IST)
+    d = t.date()
+    if is_trading_day(d, cfg) and t.time() < MARKET_CLOSE:
+        return d
+    return next_trading_day(d, cfg)
+
+
+def add_trading_days(d, n, cfg=None):
+    for _ in range(n):
+        d = next_trading_day(d, cfg)
+    return d
+
+
+def build_plan(symbol, entry, stop, mode="swing", target=None, rr=None, exchange=None,
+               cfg=None, account=None, intraday_allowed=True, setup="", when=None):
+    """A complete plan: entry, stop, target, exit time, quantity, charges, and every check.
+
+    Quantity is the largest whole number of shares whose loss AT THE STOP,
+    after all charges, fits the risk allowed right now, and whose cost fits
+    the position cap and the cash. Nothing is placed.
+    """
+    cfg = cfg or load_config()
+    account = account or account_state(cfg)
+    exchange = exchange or cfg["exchange"]
+    if mode not in MODES:
+        raise ValueError("mode must be one of " + ", ".join(MODES))
+    product = MODES[mode]["product"]
+    rr = rr or MODES[mode]["rr"]
+    rates = broker_rates(cfg)
+    entry = tick_round(float(entry), mode="up")
+    stop = tick_round(float(stop), mode="down")
+    blocks, warns = [], []
+    p = {"symbol": symbol.upper(), "exchange": exchange, "mode": mode, "product": product,
+         "setup": setup, "entry": entry, "stop": stop, "status": "blocked",
+         "blocks": blocks, "warnings": warns}
+    if stop >= entry:
+        blocks.append("the stop (%.2f) must be below the entry (%.2f)" % (stop, entry))
+        return p
+    per_share = entry - stop
+    target = tick_round(float(target), mode="down") if target else tick_round(entry + rr * per_share, mode="up")
+    p["target"] = target
+    if target <= entry:
+        blocks.append("the target must be above the entry")
+        return p
+    if mode == "intraday" and not intraday_allowed:
+        blocks.append("this stock is trade-to-trade (BE/BZ or BSE T/Z group): no intraday, delivery only")
+    if account["halted"]:
+        blocks.append(account["halt_reason"])
+    risk_now = account["risk_per_trade_now"]
+    cap_pct = cfg["intraday_max_position_pct"] if mode == "intraday" else cfg["max_position_pct"]
+    cap_value = account["equity"] * cap_pct / 100.0
+    cash = account["equity"]
+    p["risk_allowed"] = risk_now
+    caps = [(int(risk_now // per_share), "risk (Rs %s at the stop, charges included)" % money(risk_now)),
+            (int(cap_value // entry), "position cap (%d%% of equity = Rs %s)" % (cap_pct, money(cap_value))),
+            (int(cash // entry), "cash (Rs %s)" % money(cash))]
+    q, limit = min(caps, key=lambda c: c[0])
+    while q > 0 and -round_trip(entry, stop, q, product, exchange, rates)["net_pnl"] > risk_now:
+        q -= 1
+        limit = caps[0][1]
+    p["qty"] = q
+    p["qty_limited_by"] = limit
+    if q < 1:
+        if entry > cap_value:
+            blocks.append("one share (Rs %s) is more than the %d%% position cap (Rs %s)"
+                          % (money(entry), cap_pct, money(cap_value)))
+        else:
+            blocks.append("the stop is Rs %.2f a share away: even 1 share loses more than the Rs %s allowed"
+                          % (per_share, money(risk_now)))
+        return p
+    at_stop = round_trip(entry, stop, q, product, exchange, rates)
+    at_target = round_trip(entry, target, q, product, exchange, rates)
+    loss, gain = -at_stop["net_pnl"], at_target["net_pnl"]
+    p.update({
+        "position_value": round(entry * q, 2),
+        "loss_at_stop": round(loss, 2), "gain_at_target": round(gain, 2),
+        "charges_at_stop": at_stop["charges"], "charges_at_target": at_target["charges"],
+        "breakeven": at_target["breakeven"] if q else None,
+        "reward_risk": round(gain / loss, 2) if loss > 0 else None,
+        "risk_pct_of_equity": round(loss / account["equity"] * 100, 2),
+        "stop_pct": round(per_share / entry * 100, 2),
+    })
+    # the lowest target that clears the minimum reward:risk after charges
+    need = entry + cfg["min_reward_risk"] * loss / q
+    for _ in range(4):
+        rt = round_trip(entry, need, q, product, exchange, rates)
+        need = entry + (cfg["min_reward_risk"] * loss + rt["charges"]) / q
+    p["min_target"] = tick_round(need, mode="up")
+    if p["reward_risk"] is not None and p["reward_risk"] < cfg["min_reward_risk"]:
+        blocks.append("reward:risk after charges is %.2f, under your minimum %.2f: the target would need to be %.2f or higher"
+                      % (p["reward_risk"], cfg["min_reward_risk"], p["min_target"]))
+    if loss > 0 and at_stop["charges"] / loss * 100 > cfg["max_charges_pct_of_risk"]:
+        blocks.append("charges (Rs %.2f) are %.0f%% of the risk, over your %d%% limit: the move is too small for the size"
+                      % (at_stop["charges"], at_stop["charges"] / loss * 100, cfg["max_charges_pct_of_risk"]))
+    day = plan_date(when, cfg)
+    p["date"] = day.isoformat()
+    if mode == "intraday":
+        w0, w1 = cfg["intraday_entry_window"].split("-")
+        p["entry_rule"] = ("Buy only if a 5-minute candle CLOSES above %.2f between %s and %s. "
+                           "Place a stop-loss sell at %.2f and a target sell at %.2f right after the fill."
+                           % (entry, w0, w1, stop, target))
+        p["exit_rule"] = ("Out at the stop, the target, or %s, whichever comes first. Never hold an "
+                          "intraday trade overnight." % cfg["intraday_flat_by"])
+        p["exit_by"] = "%sT%s" % (day.isoformat(), cfg["intraday_flat_by"])
+    else:
+        days = MODES[mode]["max_days"]
+        last = add_trading_days(day, days, cfg)
+        p["entry_rule"] = ("Buy (delivery/CNC) only above %.2f: a stop-limit buy at %.2f, or buy if a day closes above it. "
+                           "Cancel if not filled by %s." % (entry, entry, add_trading_days(day, 2, cfg).isoformat()))
+        p["exit_rule"] = ("Sell at the stop %.2f or the target %.2f. If neither has hit by %s, sell at that day's close. "
+                          % (stop, target, last.isoformat()) +
+                          ("Once the price is 1R up (%.2f), move the stop to the entry." % (entry + per_share)))
+        p["exit_by"] = last.isoformat()
+        if mode == "positional":
+            p["exit_rule"] += " After that, trail the stop under the 20-day average."
+    if not calendar_known(day, cfg):
+        warns.append("the %d holiday list is not built in: check the exit date against NSE's calendar" % day.year)
+    if p["stop_pct"] > (3 if mode == "intraday" else 10 if mode == "swing" else 15):
+        warns.append("a %.1f%% stop is wide for %s: the size is small, check the setup still makes sense"
+                     % (p["stop_pct"], mode))
+    p["status"] = "ok" if not blocks else "blocked"
+    return p
+
+
+# --------------------------------------------------------------------------
+# Forecast ranges: what the stock's own history says is likely, never a promise
+# --------------------------------------------------------------------------
+
+def log_returns(closes):
+    out = []
+    for a, b in zip(closes, closes[1:]):
+        if a > 0 and b > 0:
+            out.append(math.log(b / a))
+    return out
+
+
+def _paths(returns, steps, n, block, rng):
+    """n simulated paths of `steps` returns, drawn in blocks of consecutive real returns."""
+    m = len(returns)
+    block = max(1, min(block, m))
+    for _ in range(n):
+        path = []
+        while len(path) < steps:
+            i = rng.randrange(0, m - block + 1)
+            path.extend(returns[i:i + block])
+        yield path[:steps]
+
+
+def _quantile(sorted_xs, q):
+    if not sorted_xs:
+        return None
+    k = (len(sorted_xs) - 1) * q
+    f = int(k)
+    c = min(f + 1, len(sorted_xs) - 1)
+    return sorted_xs[f] + (sorted_xs[c] - sorted_xs[f]) * (k - f)
+
+
+def price_ranges(closes, horizons=(5, 21, 63), n=4000, block=5, lookback=500, seed=7):
+    """Bootstrapped price ranges for each horizon (trading days).
+
+    Re-plays the stock's own daily moves from the last `lookback` days in random
+    5-day blocks (keeping streaks and volatility clusters). Returns percentiles
+    10/25/50/75/90 and the share of paths that end above today's price.
+    """
+    import random
+    rets = log_returns(closes[-(lookback + 1):])
+    if len(rets) < 60:
+        return None
+    rng = random.Random(seed)
+    last = closes[-1]
+    longest = max(horizons)
+    finals = {h: [] for h in horizons}
+    for path in _paths(rets, longest, n, block, rng):
+        s = 0.0
+        for i, r in enumerate(path, 1):
+            s += r
+            if i in finals:
+                finals[i].append(last * math.exp(s))
+    out = {}
+    for h in horizons:
+        xs = sorted(finals[h])
+        out[h] = {"p10": round(_quantile(xs, .10), 2), "p25": round(_quantile(xs, .25), 2), "p50": round(_quantile(xs, .50), 2),
+                  "p75": round(_quantile(xs, .75), 2), "p90": round(_quantile(xs, .90), 2),
+                  "prob_up": round(sum(1 for x in xs if x > last) / len(xs) * 100, 1)}
+    return {"last": last, "days_used": len(rets), "sims": n, "ranges": out}
+
+
+def range_hit_rate(closes, horizon=21, every=10, checks=25, n=800, lookback=250, seed=11):
+    """How honest are the ranges? Re-run them at past dates and count how often the
+    real price `horizon` days later landed inside the 10-90% band (80% is perfect)."""
+    import random
+    rng = random.Random(seed)
+    hits = total = 0
+    end = len(closes) - 1 - horizon
+    for k in range(checks):
+        i = end - k * every
+        if i - lookback < 1:
+            break
+        rets = log_returns(closes[i - lookback:i + 1])
+        finals = sorted(closes[i] * math.exp(sum(p)) for p in _paths(rets, horizon, n, 5, rng))
+        lo, hi = _quantile(finals, .10), _quantile(finals, .90)
+        total += 1
+        if lo <= closes[i + horizon] <= hi:
+            hits += 1
+    if not total:
+        return None
+    return {"horizon": horizon, "checks": total, "inside": hits, "hit_rate": round(hits / total * 100, 1)}
+
+
+def path_odds(returns, start, stop, target, steps, n=4000, block=3, seed=19):
+    """Replay `steps` moves n times: how often the target comes first, the stop first, or neither.
+
+    Uses closes only, so a stop or target touched by a wick inside a bar is not
+    seen: the real odds of a touch are a little higher for both.
+    """
+    import random
+    if len(returns) < 30 or steps < 1:
+        return None
+    rng = random.Random(seed)
+    lt, ls = math.log(target / start), math.log(stop / start)
+    t = s = 0
+    finals = []
+    for path in _paths(returns, steps, n, block, rng):
+        acc, res = 0.0, None
+        for r in path:
+            acc += r
+            if acc >= lt:
+                res = "t"
+                break
+            if acc <= ls:
+                res = "s"
+                break
+        if res == "t":
+            t += 1
+        elif res == "s":
+            s += 1
+        else:
+            finals.append(acc)
+    neither = n - t - s
+    avg_r_open = (sum(math.exp(x) - 1 for x in finals) / len(finals) * start / (start - stop)) if finals else 0.0
+    rr = (target - start) / (start - stop)
+    exp_r = (t * rr - s * 1.0 + neither * avg_r_open) / n
+    return {"target_first": round(t / n * 100, 1), "stop_first": round(s / n * 100, 1),
+            "neither": round(neither / n * 100, 1), "expected_r": round(exp_r, 2), "sims": n}
 
 
 # --------------------------------------------------------------------------
