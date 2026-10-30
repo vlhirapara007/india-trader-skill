@@ -155,7 +155,7 @@
     $("#s-name").textContent = s.name;
     const t = s.asof.length > 10 ? s.asof.slice(11, 16) + " IST" : "close of " + s.asof;
     $("#s-sub").textContent = `${s.symbol}, ${s.exchange}. Price as of ${t}${s.intraday_allowed ? "" : ". Delivery only (trade-to-trade)"}`;
-    $("#s-price").textContent = rs(s.price);
+    $("#s-price").textContent = s.index ? inr(s.price) : rs(s.price);
     const ch = $("#s-change");
     ch.textContent = pct(s.change_pct) + " today"; ch.className = "chg " + cls(s.change_pct);
     drawChart($("#chart-range .on").dataset.r);
@@ -180,6 +180,10 @@
       const state = o.status === "triggered" ? `closed above it at ${o.entry_time} (${inr(o.entry_price)})` :
         o.status === "waiting" ? `${o.distance_pct.toFixed(2)}% below the top, waiting` : (o.note || o.status);
       items.push({ name: "Opening range today", why: `${inr(o.or_low)} to ${inr(o.or_high)}: ${state}`, trigger: o.trigger, stop: o.stop_ref, mode: "intraday", setup: "orb" });
+      if (s.fo) {
+        items.push({ name: "Call option on a breakout", why: `Buy a CE if a 5-minute candle closes above ${inr(o.or_high)}`, trigger: o.or_high, stop: o.or_mid, mode: "options", kind: "CE", setup: "orb" });
+        items.push({ name: "Put option on a breakdown", why: o.status === "failed" ? `Closed below the range low: ${o.note || ""}` : `Buy a PE if a 5-minute candle closes below ${inr(o.or_low)}`, trigger: o.or_low, stop: o.or_mid, mode: "options", kind: "PE", setup: "orb_down" });
+      }
     }
     for (const h of s.setups) items.push({ name: SETUP_NAMES[h.setup] || h.setup, why: h.why, trigger: h.trigger, stop: h.stop_ref, mode: h.mode.split("/")[0], setup: h.setup });
     $("#s-setups").innerHTML = items.length ? items.map((h, k) => `<div class="setup">
@@ -192,6 +196,19 @@
 
     const atr = st.atr || s.price * 0.02;
     const last = s.daily[s.daily.length - 1];
+    $("#mode-options").hidden = !s.fo;
+    if (s.fo) {
+      $("#opt-expiry").innerHTML = s.fo.expiries.map((e, i) => `<option value="${e}">${new Date(e + "T00:00:00+05:30").toLocaleDateString("en-IN", { day: "numeric", month: "short", weekday: "short", timeZone: "Asia/Kolkata" })}${i === 0 && s.fo.weekly ? " (this week)" : ""}</option>`).join("");
+      const today = new Date().toLocaleDateString("en-CA", { timeZone: "Asia/Kolkata" });
+      const nextNotToday = s.fo.expiries.find((e) => e > today) || s.fo.expiries[0];
+      $("#opt-expiry").value = nextNotToday;
+    }
+    if (!s.fo && mode === "options") mode = "intraday";
+    if (!preset && s.index && s.fo) {
+      const mid = (last[2] + last[3]) / 2;
+      preset = s.orb && s.orb.or_high ? { trigger: s.orb.or_high, stop: s.orb.or_mid, mode: "options", kind: "CE", setup: "orb" }
+        : { trigger: +(last[2]).toFixed(2), stop: +mid.toFixed(2), mode: "options", kind: "CE", setup: "prev_day" };
+    }
     fillPlan(preset || items[0] || { trigger: +(last[2] + 0.05).toFixed(2), stop: +(last[4] - 1.5 * atr).toFixed(2), mode: "swing", setup: "manual" });
     renderRanges();
   }
@@ -254,17 +271,55 @@
   window.addEventListener("resize", () => { if (chart) chart.applyOptions({ width: $("#chart").clientWidth }); });
 
   // ---------------------------------------------------------------- plan
-  let mode = "swing", planSetup = "manual", planTimer = null, planSeq = 0;
-  function setMode(m) { mode = m; $$("#mode button").forEach((b) => b.classList.toggle("on", b.dataset.m === m)); }
+  let mode = "swing", planSetup = "manual", planTimer = null, planSeq = 0, optKind = "CE";
+  function setKind(k) {
+    optKind = k;
+    $$("#opt-kind button").forEach((b) => b.classList.toggle("on", b.dataset.k === k));
+    labelFields();
+  }
+  function labelFields() {
+    const o = mode === "options";
+    $("#opt-controls").hidden = !o;
+    $("#l-entry").textContent = o ? (optKind === "CE" ? "Buy when price closes above" : "Buy when price closes below") : "Buy above";
+    $("#l-stop").textContent = o ? "Exit if price goes back to" : "Stop loss";
+  }
+  function setMode(m) { mode = m; $$("#mode button").forEach((b) => b.classList.toggle("on", b.dataset.m === m)); labelFields(); }
+  function optLevels(k) {
+    const s = STOCK, last = s.daily[s.daily.length - 1], o = s.orb;
+    if (o && o.or_high) return k === "CE" ? [o.or_high, o.or_mid] : [o.or_low, o.or_mid];
+    const mid = (last[2] + last[3]) / 2;
+    return k === "CE" ? [last[2], mid] : [last[3], mid];
+  }
+  $("#opt-kind").addEventListener("click", (e) => {
+    const b = e.target.closest("button"); if (!b || b.dataset.k === optKind) return;
+    setKind(b.dataset.k);
+    const [en, st] = optLevels(optKind);
+    $("#f-entry").value = (+en).toFixed(2); $("#f-stop").value = (+st).toFixed(2); $("#f-target").value = "";
+    makePlan();
+  });
+  ["#opt-strike", "#opt-expiry"].forEach((id) => $(id).addEventListener("change", makePlan));
   function fillPlan(h) {
-    setMode(STOCK && !STOCK.intraday_allowed && h.mode === "intraday" ? "swing" : (["intraday", "swing", "positional"].includes(h.mode) ? h.mode : "swing"));
+    if (h.mode === "options" && STOCK && STOCK.fo) { setMode("options"); setKind(h.kind || "CE"); }
+    else setMode(STOCK && !STOCK.intraday_allowed && h.mode === "intraday" ? "swing" : (["intraday", "swing", "positional"].includes(h.mode) ? h.mode : "swing"));
     $("#f-entry").value = (+h.trigger).toFixed(2);
     $("#f-stop").value = (+h.stop).toFixed(2);
     $("#f-target").value = "";
     planSetup = h.setup || "manual";
     makePlan();
   }
-  $("#mode").addEventListener("click", (e) => { const b = e.target.closest("button"); if (b) { setMode(b.dataset.m); makePlan(); } });
+  $("#mode").addEventListener("click", (e) => {
+    const b = e.target.closest("button"); if (!b) return;
+    const was = mode;
+    setMode(b.dataset.m);
+    if (b.dataset.m === "options" && was !== "options") {
+      const [en, st] = optLevels(optKind);
+      $("#f-entry").value = (+en).toFixed(2); $("#f-stop").value = (+st).toFixed(2); $("#f-target").value = "";
+    } else if (was === "options" && b.dataset.m !== "options" && optKind === "PE") {
+      const [en, st] = optLevels("CE");
+      $("#f-entry").value = (+en).toFixed(2); $("#f-stop").value = (+st).toFixed(2); $("#f-target").value = "";
+    }
+    makePlan();
+  });
   $$("#plan-form input").forEach((i) => i.addEventListener("input", () => { clearTimeout(planTimer); planTimer = setTimeout(makePlan, 450); }));
   $("#plan-form").addEventListener("submit", (e) => { e.preventDefault(); makePlan(); });
 
@@ -277,6 +332,16 @@
       mode === "swing" ? "Swing: delivery, up to 10 trading days. Target blank = 2.5× the risk." : "Positional: delivery, up to 60 trading days. Target blank = 3× the risk.";
     if (mode === "intraday") hint.textContent += " Target blank = 2× the risk.";
     const seq = ++planSeq;
+    if (mode === "options") {
+      hint.textContent = "Buying an option only (never selling). Out by 15:10. Target blank = a 2× move in the price.";
+      const oparams = Object.assign({ symbol: STOCK.symbol, exchange: STOCK.exchange, kind: optKind, entry, stop,
+        strike: $("#opt-strike").value, expiry: $("#opt-expiry").value }, target > 0 ? { target } : {});
+      let op;
+      try { op = await api("options", Object.assign({}, rules, oparams)); } catch (e) { $("#plan").innerHTML = `<div class="error">${esc(e.message)}</div>`; return; }
+      if (seq !== planSeq) return;
+      $("#plan").innerHTML = optSlip(op);
+      return;
+    }
     const params = Object.assign({ symbol: STOCK.symbol, exchange: STOCK.exchange, mode, entry, stop, setup: planSetup }, target > 0 ? { target } : {});
     let p;
     try { p = await api("plan", Object.assign({}, rules, params)); } catch (e) { $("#plan").innerHTML = `<div class="error">${esc(e.message)}</div>`; return; }
@@ -292,7 +357,7 @@
     if (p.target && p.stop < p.entry) {
       const up = p.target - p.entry, dn = p.entry - p.stop, tot = up + dn;
       const upF = Math.max(0.12, up / tot), dnF = Math.max(0.12, dn / tot);
-      ladder = `<div class="ladder" style="grid-template-rows:minmax(64px,${upF}fr) auto minmax(64px,${dnF}fr)"
+      ladder = `<div class="ladder" style="grid-template-rows:minmax(min-content,${upF}fr) auto minmax(min-content,${dnF}fr)"
           role="img" aria-label="Reward ${inr(up)} a share above the entry, risk ${inr(dn)} a share below">
         <div class="rw"></div>
         <div class="rung t"><div><div class="lab">Target</div><div class="val">${inr(p.target)}</div></div>
@@ -336,6 +401,67 @@
       ${rows.length ? `<dl class="kv">${rows.map(([k, v]) => `<dt>${esc(k)}</dt><dd>${esc(v)}</dd>`).join("")}</dl>` : ""}
       ${msgs ? `<div class="msgs">${msgs}</div>` : ""}
       ${how}${odds}</div>`;
+  }
+
+  function oddsBlock(o, title) {
+    if (!o) return "";
+    const verdict = o.expected_r > 0.15 ? "leans your way" : o.expected_r > -0.15 ? "close to a coin flip" : "leans against you";
+    return `<div class="odds"><strong>${esc(title)}</strong>
+      <div class="oddsbar" role="img" aria-label="Target first ${o.target_first}%, neither ${o.neither}%, stop first ${o.stop_first}%">
+        <span class="t" style="width:${o.target_first}%"></span><span class="n" style="width:${o.neither}%"></span><span class="s" style="width:${o.stop_first}%"></span></div>
+      <div class="oddsrow"><div class="up"><b>${o.target_first.toFixed(0)}%</b>target first</div><div><b>${o.neither.toFixed(0)}%</b>neither by exit</div><div class="down" style="text-align:right"><b>${o.stop_first.toFixed(0)}%</b>stop first</div></div>
+      <p>Average result <b>${o.expected_r > 0 ? "+" : ""}${o.expected_r.toFixed(2)}R</b> a trade before charges: ${verdict}.</p>
+      <small>Replayed ${inr(o.sims, 0)} times from ${esc(o.basis || "")}. Uses closes only. Past moves, not a promise.</small></div>`;
+  }
+
+  function optSlip(p) {
+    if (!p.contract) {
+      return `<div class="slip"><div class="slip-head"><strong>${esc(p.symbol)} ${esc(p.kind)}</strong><span class="verdict no">Doesn't fit</span></div>
+        <div class="msgs">${(p.blocks || []).map((b) => `<div class="msg block">${esc(b.replace(/Rs /g, "₹"))}</div>`).join("")}</div></div>`;
+    }
+    const ok = p.status === "ok", ce = p.kind === "CE";
+    const up = p.premium_target - p.premium_entry, dn = p.premium_entry - p.premium_stop, tot = up + dn || 1;
+    const upF = Math.max(0.12, up / tot), dnF = Math.max(0.12, dn / tot);
+    const ladder = `<div class="ladder" style="grid-template-rows:minmax(min-content,${upF}fr) auto minmax(min-content,${dnF}fr)" role="img"
+        aria-label="Option premium: buy ${inr(p.premium_entry)}, target ${inr(p.premium_target)}, stop ${inr(p.premium_stop)}">
+      <div class="rw"></div>
+      <div class="rung t"><div><div class="lab">Sell at about</div><div class="val">${inr(p.premium_target)}</div><div class="u">when ${esc(p.symbol)} hits ${inr(p.u_target)}</div></div>
+        <div><div class="lab">if hit</div><div class="net up">+${rs(p.gain_at_target)}</div></div></div>
+      <div class="en"></div>
+      <div class="rung e"><div><div class="lab">Buy at about</div><div class="val">${inr(p.premium_entry)}</div><div class="u">when ${esc(p.symbol)} closes ${ce ? "above" : "below"} ${inr(p.u_entry)}</div></div>
+        <div><div class="lab">${p.lots_shown} lot${p.lots_shown > 1 ? "s" : ""}, ${p.qty} units</div><div class="net">${rs(p.cost, 0)}</div></div></div>
+      <div class="rk"></div>
+      <div class="rung s"><div><div class="lab">Stop at about</div><div class="val">${inr(p.premium_stop)}</div><div class="u">when ${esc(p.symbol)} is back at ${inr(p.u_stop)}</div></div>
+        <div><div class="lab">if stopped</div><div class="net down">−${rs(p.loss_at_stop)}</div></div></div>
+    </div>`;
+    const exp = new Date(p.expiry + "T00:00:00+05:30").toLocaleDateString("en-IN", { weekday: "short", day: "numeric", month: "short", timeZone: "Asia/Kolkata" });
+    const rows = [
+      ["Expiry", `${exp} (${p.days_to_expiry} day${p.days_to_expiry === 1 ? "" : "s"})`],
+      ["Lot size", `${p.lot} units`],
+      [p.lots ? "Lots that fit your risk" : "Lots that fit your risk", p.lots ? String(p.lots) : "none (showing 1 lot)"],
+      ["Risk of 1 lot", rs(p.loss_per_lot) + " (you allow " + rs(p.risk_allowed, 0) + ")"],
+      ["Cost of 1 lot", rs(p.cost_per_lot, 0)],
+      ["Premium now", inr(p.premium_now) + (p.premium_source === "live" ? " (NSE)" : " (estimate)")],
+      ["Volatility used", p.iv_used.toFixed(1) + "% a year" + (p.premium_source === "live" ? " (option's IV)" : " (stock's own)")],
+      ["Delta", p.delta.toFixed(2) + " (premium moves about ₹" + Math.abs(p.delta).toFixed(2) + " per ₹1)"],
+      ["Reward : risk", p.reward_risk != null ? p.reward_risk.toFixed(2) + " after charges" : "—"],
+      ["Charges", rs(p.charges_round_trip) + " for the round trip"],
+      ["Breakeven at expiry", rs(p.breakeven_at_expiry)],
+      ["Exit by", (p.exit_by || "").replace("T", " at ")],
+    ];
+    const msgs = (p.blocks || []).map((b) => `<div class="msg block">${esc(b.replace(/Rs /g, "₹"))}</div>`)
+      .concat((p.warnings || []).map((w) => `<div class="msg warn">${esc(w.replace(/Rs /g, "₹"))}</div>`)).join("");
+    return `<div class="slip">
+      <div class="slip-head"><div><div class="contract">${esc(p.contract)}<span class="src ${p.premium_source === "live" ? "live" : ""}">${p.premium_source === "live" ? "live premium" : "estimated premium"}</span></div>
+        <div class="hint" style="margin:2px 0 0">Buy only. ${ce ? "Profits if the price rises." : "Profits if the price falls."} Spot ${inr(p.spot)}.</div></div>
+        <span class="verdict ${ok ? "ok" : "no"}">${ok ? "Fits your rules" : "Doesn't fit"}</span></div>
+      ${ladder}
+      <dl class="kv">${rows.map(([k, v]) => `<dt>${esc(k)}</dt><dd>${esc(v)}</dd>`).join("")}</dl>
+      ${msgs ? `<div class="msgs">${msgs}</div>` : ""}
+      <div class="howto"><p><strong>Placing it in Groww.</strong> F&O, search ${esc(p.symbol)}, pick ${esc(exp)} and the ${esc(String(p.strike))} ${esc(p.kind)}, Buy, Intraday, Limit. ${esc(p.entry_rule.replace(/Rs /g, "₹"))}</p><p>${esc(p.exit_rule)}</p></div>
+      ${oddsBlock(p.odds, `Odds from ${p.symbol}'s own past moves`)}
+      <p class="fno-note">Strikes for stocks are worked out from the price, so check the exact strike in Groww. SEBI found about 9 in 10 individual F&O traders lost money; buying options can lose the whole premium.</p>
+    </div>`;
   }
 
   // ---------------------------------------------------------------- ranges

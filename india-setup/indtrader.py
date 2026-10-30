@@ -1087,20 +1087,26 @@ def range_hit_rate(closes, horizon=21, every=10, checks=25, n=800, lookback=250,
 def path_odds(returns, start, stop, target, steps, n=4000, block=3, seed=19):
     """Replay `steps` moves n times: how often the target comes first, the stop first, or neither.
 
-    Uses closes only, so a stop or target touched by a wick inside a bar is not
-    seen: the real odds of a touch are a little higher for both.
+    Works both ways: a long idea (target above, stop below) or a short/put idea
+    (target below, stop above). Uses closes only, so a stop or target touched
+    by a wick inside a bar is not seen: the real odds of a touch are a little
+    higher for both.
     """
     import random
-    if len(returns) < 30 or steps < 1:
+    if len(returns) < 30 or steps < 1 or start <= 0 or stop <= 0 or target <= 0:
         return None
+    up = target > start
+    if up == (stop > start):
+        return None                     # target and stop on the same side
+    sign = 1.0 if up else -1.0          # a fall is a gain for a put
     rng = random.Random(seed)
-    lt, ls = math.log(target / start), math.log(stop / start)
+    lt, ls = sign * math.log(target / start), sign * math.log(stop / start)
     t = s = 0
     finals = []
     for path in _paths(returns, steps, n, block, rng):
         acc, res = 0.0, None
         for r in path:
-            acc += r
+            acc += sign * r
             if acc >= lt:
                 res = "t"
                 break
@@ -1114,11 +1120,372 @@ def path_odds(returns, start, stop, target, steps, n=4000, block=3, seed=19):
         else:
             finals.append(acc)
     neither = n - t - s
-    avg_r_open = (sum(math.exp(x) - 1 for x in finals) / len(finals) * start / (start - stop)) if finals else 0.0
-    rr = (target - start) / (start - stop)
+    risk = abs(start - stop)
+    # R at the close for paths that hit neither: the move in our favour over the risk
+    avg_r_open = (sum((math.exp(sign * x) - 1) * start * sign for x in finals) / len(finals) / risk) if finals else 0.0
+    rr = abs(target - start) / risk
     exp_r = (t * rr - s * 1.0 + neither * avg_r_open) / n
     return {"target_first": round(t / n * 100, 1), "stop_first": round(s / n * 100, 1),
-            "neither": round(neither / n * 100, 1), "expected_r": round(exp_r, 2), "sims": n}
+            "neither": round(neither / n * 100, 1), "expected_r": round(exp_r, 2), "sims": n,
+            "direction": "up" if up else "down"}
+
+
+# --------------------------------------------------------------------------
+# Options: buy-only CE/PE plans (never option selling)
+# --------------------------------------------------------------------------
+
+# Groww equity options charges, from groww.in/pricing/futures-and-options, checked 2026-10-30.
+GROWW_FO = {
+    "as_of": "2026-10-30",
+    "source": "https://groww.in/pricing/futures-and-options",
+    "brokerage_per_order": 20.0,
+    "stt_sell_pct": 0.15,                         # on premium, sell side only
+    "stamp_buy_pct": 0.003,
+    "exchange_txn_pct": {"NSE": 0.03503, "BSE": 0.0325},
+    "sebi_pct": 0.0001,
+    "ipft_pct": 0.0005,
+    "gst_pct": 18.0,
+}
+
+# Index options. Lot sizes from January 2026 (NSE revises them; check before trading).
+INDEX_OPTIONS = {
+    "NIFTY": {"name": "Nifty 50 index", "yahoo": "^NSEI", "lot": 65, "step": 50, "weekly": True},
+    "BANKNIFTY": {"name": "Nifty Bank index", "yahoo": "^NSEBANK", "lot": 30, "step": 100, "weekly": False},
+}
+FO_LOTS_URL = "https://nsearchives.nseindia.com/content/fo/fo_mktlots.csv"
+RISK_FREE = 0.065
+
+
+def option_order_charges(premium, qty, side, exchange="NSE", rates=None):
+    r = rates or GROWW_FO
+    v = float(premium) * int(qty)
+    brokerage = r["brokerage_per_order"] if v > 0 else 0.0
+    stt = v * r["stt_sell_pct"] / 100 if side == "sell" else 0.0
+    stamp = v * r["stamp_buy_pct"] / 100 if side == "buy" else 0.0
+    exch = v * r["exchange_txn_pct"][exchange] / 100
+    sebi = v * r["sebi_pct"] / 100
+    ipft = v * r["ipft_pct"] / 100
+    gst = (brokerage + exch + sebi + ipft) * r["gst_pct"] / 100
+    parts = {"brokerage": brokerage, "stt": stt, "stamp_duty": stamp, "exchange_txn": exch, "sebi": sebi,
+             "ipft": ipft, "gst": gst}
+    parts = {k: round(x, 2) for k, x in parts.items()}
+    parts["total"] = round(sum(parts.values()), 2)
+    return parts
+
+
+def option_round_trip(buy, sell, qty, exchange="NSE"):
+    b = option_order_charges(buy, qty, "buy", exchange)["total"]
+    s = option_order_charges(sell, qty, "sell", exchange)["total"]
+    gross = (float(sell) - float(buy)) * int(qty)
+    return {"gross": round(gross, 2), "charges": round(b + s, 2), "net": round(gross - b - s, 2)}
+
+
+def _ncdf(x):
+    return 0.5 * (1 + math.erf(x / math.sqrt(2)))
+
+
+def bs_price(S, K, T, sigma, kind="CE", r=RISK_FREE):
+    """Black-Scholes price of a European option. T in years."""
+    if T <= 0 or sigma <= 0:
+        return max(0.0, S - K) if kind == "CE" else max(0.0, K - S)
+    d1 = (math.log(S / K) + (r + sigma * sigma / 2) * T) / (sigma * math.sqrt(T))
+    d2 = d1 - sigma * math.sqrt(T)
+    if kind == "CE":
+        return S * _ncdf(d1) - K * math.exp(-r * T) * _ncdf(d2)
+    return K * math.exp(-r * T) * _ncdf(-d2) - S * _ncdf(-d1)
+
+
+def bs_delta(S, K, T, sigma, kind="CE", r=RISK_FREE):
+    if T <= 0 or sigma <= 0:
+        return (1.0 if S > K else 0.0) if kind == "CE" else (-1.0 if S < K else 0.0)
+    d1 = (math.log(S / K) + (r + sigma * sigma / 2) * T) / (sigma * math.sqrt(T))
+    return _ncdf(d1) if kind == "CE" else _ncdf(d1) - 1
+
+
+def hist_vol(closes, n=20):
+    """Annualised volatility of the last n daily moves."""
+    rets = log_returns(closes[-(n + 1):])
+    if len(rets) < 5:
+        return None
+    m = sum(rets) / len(rets)
+    var = sum((x - m) ** 2 for x in rets) / (len(rets) - 1)
+    return math.sqrt(var) * math.sqrt(252)
+
+
+def strike_step(price, symbol=""):
+    """The gap between strikes. Exact for the indices; an approximation for stocks (check in your broker)."""
+    if symbol.upper() in INDEX_OPTIONS:
+        return INDEX_OPTIONS[symbol.upper()]["step"]
+    for limit, step in ((100, 1), (250, 2.5), (500, 5), (1000, 10), (2500, 20), (5000, 50), (10000, 100)):
+        if price < limit:
+            return step
+    return 250
+
+
+def nearest_strike(price, step):
+    return round(round(price / step) * step, 2)
+
+
+def last_tuesday(year, month):
+    d = dt.date(year + (month == 12), month % 12 + 1, 1) - dt.timedelta(days=1)
+    while d.weekday() != 1:
+        d -= dt.timedelta(days=1)
+    return d
+
+
+def _on_trading_day(d, cfg=None):
+    """Expiry moves to the previous trading day when it falls on a holiday."""
+    while not is_trading_day(d, cfg):
+        d -= dt.timedelta(days=1)
+    return d
+
+
+def expiries(symbol, today=None, count=3, cfg=None):
+    """Upcoming NSE expiries: Nifty weekly on Tuesdays; stocks and Bank Nifty on the month's last Tuesday."""
+    today = today or now_ist().date()
+    out = []
+    if INDEX_OPTIONS.get(symbol.upper(), {}).get("weekly"):
+        d = today
+        while len(out) < count:
+            if d.weekday() == 1:
+                e = _on_trading_day(d, cfg)
+                if e >= today and e not in out:
+                    out.append(e)
+            d += dt.timedelta(days=1)
+        return out
+    y, m = today.year, today.month
+    while len(out) < count:
+        e = _on_trading_day(last_tuesday(y, m), cfg)
+        if e >= today:
+            out.append(e)
+        y, m = (y + 1, 1) if m == 12 else (y, m + 1)
+    return out
+
+
+def parse_fo_lots(text):
+    """NSE fo_mktlots.csv: UNDERLYING, SYMBOL, then one lot-size column per expiry month."""
+    out = {}
+    for row in csv.reader(io.StringIO(text.lstrip("\ufeff"))):
+        if len(row) < 3:
+            continue
+        sym = row[1].strip().upper()
+        if not sym or sym == "SYMBOL":
+            continue
+        for cell in row[2:]:
+            cell = cell.strip()
+            if cell.isdigit() and int(cell) > 0:
+                out[sym] = int(cell)
+                break
+    if not out:
+        raise ValueError("no lot sizes found: is this NSE's fo_mktlots.csv?")
+    return out
+
+
+def load_fo_lots(refresh=False, fetch=None, from_file=None, snapshot=None):
+    """Lot sizes of every F&O stock and index, cached 7 days. Falls back to a saved copy."""
+    cache = path("universe", "fo_lots.json")
+    if from_file:
+        with open(from_file, encoding="utf-8-sig") as fh:
+            lots = parse_fo_lots(fh.read())
+        write_json(cache, {"fetched": now_ist().isoformat(timespec="minutes"), "lots": lots})
+        return lots
+    cached = read_json(cache)
+    if cached and not refresh and (now_ist() - dt.datetime.fromisoformat(cached["fetched"])).days < 7:
+        return cached["lots"]
+    try:
+        lots = parse_fo_lots((fetch or http_get)(FO_LOTS_URL))
+        write_json(cache, {"fetched": now_ist().isoformat(timespec="minutes"), "lots": lots})
+        return lots
+    except Exception as e:  # blocked, changed format, anything: fall back
+        for src in (cached, read_json(snapshot) if snapshot else None):
+            if src and src.get("lots"):
+                return src["lots"]
+        sys.stderr.write("warning: no F&O lot sizes (%s); only Nifty and Bank Nifty are known\n" % e)
+        return {k: v["lot"] for k, v in INDEX_OPTIONS.items()}
+
+
+def lot_size(symbol, lots=None):
+    symbol = symbol.upper()
+    if lots and symbol in lots:
+        return lots[symbol]
+    if symbol in INDEX_OPTIONS:
+        return INDEX_OPTIONS[symbol]["lot"]
+    return None
+
+
+def nse_option_chain(symbol, fetch_opener=None):
+    """Best effort: NSE's own option chain (live premiums and IVs).
+
+    NSE blocks most scripts and cloud servers, so this often fails; callers fall
+    back to estimated premiums. Returns {"spot", "rows": [{expiry, strike, CE, PE}]} or None.
+    """
+    import http.cookiejar
+    symbol = symbol.upper()
+    is_index = symbol in INDEX_OPTIONS
+    opener = fetch_opener or urllib.request.build_opener(urllib.request.HTTPCookieProcessor(http.cookiejar.CookieJar()))
+    h = {"User-Agent": UA, "Accept": "application/json, text/plain, */*", "Accept-Language": "en-IN,en;q=0.9",
+         "Referer": "https://www.nseindia.com/option-chain"}
+    urls = ["https://www.nseindia.com/api/option-chain-%s?symbol=%s" % ("indices" if is_index else "equities",
+                                                                         urllib.parse.quote(symbol))]
+    try:
+        opener.open(urllib.request.Request("https://www.nseindia.com/option-chain", headers=h), timeout=10).read()
+    except Exception:
+        return None
+    for url in urls:
+        try:
+            raw = opener.open(urllib.request.Request(url, headers=h), timeout=12).read().decode("utf-8", "replace")
+            return parse_option_chain(raw)
+        except Exception:
+            continue
+    return None
+
+
+def parse_option_chain(text):
+    data = json.loads(text)
+    rec = data.get("records") or data.get("filtered") or {}
+    rows = []
+    for r in rec.get("data") or []:
+        try:
+            exp = dt.datetime.strptime(r.get("expiryDate") or r.get("expiryDates"), "%d-%b-%Y").date()
+        except (TypeError, ValueError):
+            continue
+        row = {"expiry": exp.isoformat(), "strike": float(r["strikePrice"])}
+        for k in ("CE", "PE"):
+            o = r.get(k)
+            if o:
+                row[k] = {"ltp": o.get("lastPrice"), "iv": o.get("impliedVolatility"), "oi": o.get("openInterest"),
+                          "bid": o.get("bidprice") or o.get("buyPrice1"), "ask": o.get("askPrice") or o.get("sellPrice1"),
+                          "volume": o.get("totalTradedVolume")}
+        rows.append(row)
+    if not rows:
+        raise ValueError("empty option chain")
+    return {"spot": rec.get("underlyingValue"), "rows": rows}
+
+
+def option_plan(symbol, spot, closes, kind, u_entry, u_stop, u_target=None, strike_pref="ATM", expiry=None,
+                lot=None, chain=None, cfg=None, account=None, exchange="NSE", when=None):
+    """A buy-only option plan (CE when you expect a rise, PE for a fall) sized to your risk.
+
+    The stock or index levels decide the trade (buy the CE when price CLOSES
+    above u_entry; stop when it goes back to u_stop). The option's premium at
+    those levels is worked out from the live chain when NSE answers, otherwise
+    estimated with Black-Scholes from the stock's own recent volatility.
+    """
+    cfg = cfg or load_config()
+    account = account or account_state(cfg)
+    when = (when or now_ist()).astimezone(IST)
+    kind = kind.upper()
+    blocks, warns = [], []
+    p = {"symbol": symbol.upper(), "kind": kind, "status": "blocked", "blocks": blocks, "warnings": warns,
+         "u_entry": round(u_entry, 2), "u_stop": round(u_stop, 2)}
+    if kind not in ("CE", "PE"):
+        raise ValueError("kind must be CE or PE")
+    if lot is None:
+        blocks.append("%s has no options on NSE (it isn't in the F&O list)" % symbol.upper())
+        return p
+    long_ = kind == "CE"
+    if long_ and not u_stop < u_entry:
+        blocks.append("for a CE the stop (%.2f) must be below the trigger (%.2f)" % (u_stop, u_entry))
+        return p
+    if not long_ and not u_stop > u_entry:
+        blocks.append("for a PE the stop (%.2f) must be above the trigger (%.2f)" % (u_stop, u_entry))
+        return p
+    risk_u = abs(u_entry - u_stop)
+    if u_target is None:
+        u_target = u_entry + 2 * risk_u if long_ else u_entry - 2 * risk_u
+    p["u_target"] = round(u_target, 2)
+    if (u_target - u_entry) * (1 if long_ else -1) <= 0:
+        blocks.append("the target must be beyond the trigger in the trade's direction")
+        return p
+    exps = expiries(symbol, when.date(), 3, cfg)
+    if expiry is None:
+        # skip today's expiry for a fresh intraday buy: the premium can melt within minutes
+        expiry = next((e for e in exps if e > when.date()), exps[0])
+    p["expiry"] = expiry.isoformat()
+    p["expiries"] = [e.isoformat() for e in exps]
+    step = strike_step(spot, symbol)
+    atm = nearest_strike(spot, step)
+    shift = {"ATM": 0, "ITM1": -1, "OTM1": 1}.get(strike_pref, 0) * step * (1 if long_ else -1)
+    K = round(atm + shift, 2)
+    p.update({"strike": K, "strike_step": step, "strike_pref": strike_pref, "lot": lot})
+    close_dt = dt.datetime.combine(expiry, MARKET_CLOSE, IST)
+    T = max((close_dt - when).total_seconds() / (365 * 24 * 3600), 0.5 / 365)
+    hv = max(x for x in (hist_vol(closes, 20), hist_vol(closes, 60), 0.12) if x is not None)
+    source, sigma, ltp = "estimate", hv, None
+    if chain:
+        row = next((r for r in chain.get("rows", []) if r["expiry"] == expiry.isoformat() and abs(r["strike"] - K) < 1e-6), None)
+        o = row and row.get(kind)
+        if o and o.get("ltp"):
+            ltp = float(o["ltp"])
+            if o.get("iv"):
+                sigma = float(o["iv"]) / 100
+            source = "live"
+    S0 = float(chain.get("spot") or spot) if (chain and source == "live") else spot
+    model = lambda S: bs_price(S, K, T, sigma, kind)
+    base = model(S0)
+    adj = (ltp - base) if ltp is not None else 0.0          # keep the live premium's level, move it with the model
+    prem = lambda S: max(0.05, model(S) + adj)
+    pe, ps, pt = prem(u_entry), prem(u_stop), prem(u_target)
+    pe, ps, pt = tick_round(pe, mode="up"), tick_round(ps, mode="down"), tick_round(pt, mode="down")
+    delta = bs_delta(u_entry, K, T, sigma, kind)
+    p.update({"premium_now": round(ltp if ltp is not None else base, 2), "premium_source": source,
+              "iv_used": round(sigma * 100, 1), "hv20": round((hist_vol(closes, 20) or 0) * 100, 1),
+              "premium_entry": pe, "premium_stop": ps, "premium_target": pt, "delta": round(delta, 2),
+              "days_to_expiry": (expiry - when.date()).days,
+              "contract": "%s %s %s %s" % (symbol.upper(), expiry.strftime("%d %b").lstrip("0"),
+                                           ("%g" % K), kind)})
+    if account["halted"]:
+        blocks.append(account["halt_reason"])
+    risk_now = account["risk_per_trade_now"]
+    one = option_round_trip(pe, ps, lot, exchange)
+    loss_lot = -one["net"]
+    cost_lot = pe * lot
+    lots_risk = int(risk_now // loss_lot) if loss_lot > 0 else 0
+    lots_cash = int(account["equity"] // (cost_lot + 60))
+    lots = min(lots_risk, lots_cash)
+    p.update({"cost_per_lot": round(cost_lot, 2), "loss_per_lot": round(loss_lot, 2), "lots": lots,
+              "risk_allowed": risk_now})
+    if lots < 1:
+        if lots_cash < 1:
+            blocks.append("one lot costs Rs %s (%d x %.2f), more than your Rs %s" % (
+                money(cost_lot), lot, pe, money(account["equity"])))
+        if lots_risk < 1:
+            blocks.append("one lot loses Rs %s if the stop hits (premium %.2f -> %.2f on %d units, with charges): "
+                          "more than the Rs %s you allow per trade" % (money(loss_lot), pe, ps, lot, money(risk_now)))
+        lots_shown = 1
+    else:
+        lots_shown = lots
+    qty = lots_shown * lot
+    at_stop = option_round_trip(pe, ps, qty, exchange)
+    at_tgt = option_round_trip(pe, pt, qty, exchange)
+    p.update({"qty": qty, "lots_shown": lots_shown, "cost": round(pe * qty, 2),
+              "loss_at_stop": round(-at_stop["net"], 2), "gain_at_target": round(at_tgt["net"], 2),
+              "charges_round_trip": at_tgt["charges"],
+              "reward_risk": round(at_tgt["net"] / -at_stop["net"], 2) if at_stop["net"] < 0 else None,
+              "breakeven_at_expiry": round(K + pe if long_ else K - pe, 2)})
+    if p["reward_risk"] is not None and p["reward_risk"] < cfg["min_reward_risk"]:
+        blocks.append("reward:risk after charges is %.2f, under your minimum %.2f" % (p["reward_risk"], cfg["min_reward_risk"]))
+    if -at_stop["net"] > 0 and at_stop["charges"] / -at_stop["net"] * 100 > cfg["max_charges_pct_of_risk"]:
+        blocks.append("charges (Rs %.2f) are %.0f%% of the risk, over your %d%% limit"
+                      % (at_stop["charges"], at_stop["charges"] / -at_stop["net"] * 100, cfg["max_charges_pct_of_risk"]))
+    if source == "estimate":
+        warns.append("premiums are estimates (NSE's live option chain didn't answer): check the real price in Groww "
+                     "before buying; real premiums are often higher than this estimate")
+    if p["days_to_expiry"] <= 1:
+        warns.append("expiry is %s: premiums can fall very fast this close to expiry"
+                     % ("today" if p["days_to_expiry"] == 0 else "tomorrow"))
+    w0, w1 = cfg["intraday_entry_window"].split("-")
+    cmp_word = "above" if long_ else "below"
+    p["entry_rule"] = ("Buy %s only after a 5-minute candle of %s CLOSES %s %.2f, between %s and %s. "
+                       "Expect to pay about %.2f a unit (%d lot%s, %d units, Rs %s)."
+                       % (p["contract"], symbol.upper(), cmp_word, u_entry, w0, w1, pe, lots_shown,
+                          "" if lots_shown == 1 else "s", qty, money(p["cost"])))
+    p["exit_rule"] = ("Sell when %s goes back to %.2f (premium near %.2f) or reaches %.2f (premium near %.2f), "
+                      "or at %s at the latest. Set a stop-loss sell on the option right after buying."
+                      % (symbol.upper(), u_stop, ps, u_target, pt, cfg["intraday_flat_by"]))
+    p["exit_by"] = "%sT%s" % (when.date().isoformat(), cfg["intraday_flat_by"])
+    p["status"] = "ok" if not blocks else "blocked"
+    return p
 
 
 # --------------------------------------------------------------------------

@@ -1,10 +1,24 @@
 {
   "$schema": "https://openapi.vercel.sh/vercel.json",
-  "regions": ["bom1"],
+  "regions": [
+    "bom1"
+  ],
   "functions": {
     "app.py": {
       "maxDuration": 120,
-      "excludeFiles": "{tests/**,dist/**,tools/**,**/__pycache__/**,india-*/SKILL.md}"
+      "excludeFiles": "{tests/**,dist/**,tools/**,**/__pycache__/**,india-*/SKILL.md}",
+      "memory": 1024
     }
-  }
+  },
+  "headers": [
+    {
+      "source": "/(.*)",
+      "headers": [
+        {
+          "key": "X-Robots-Tag",
+          "value": "noindex, nofollow"
+        }
+      ]
+    }
+  ]
 }

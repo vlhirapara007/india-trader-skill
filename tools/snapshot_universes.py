@@ -22,3 +22,7 @@ for name in ("nifty50", "nifty200", "banknifty", "nse_all", "bse_all"):
     it.write_json(os.path.join(out, name + ".json"),
                   {"name": name, "fetched": it.now_ist().isoformat(timespec="minutes"), "items": items})
     print("%-10s %5d stocks" % (name, len(items)))
+
+lots = it.load_fo_lots(refresh=True)
+it.write_json(os.path.join(out, "fo_lots.json"), {"fetched": it.now_ist().isoformat(timespec="minutes"), "lots": lots})
+print("%-10s %5d F&O lot sizes" % ("fo_lots", len(lots)))

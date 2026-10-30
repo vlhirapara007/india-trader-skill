@@ -114,6 +114,10 @@ def instrument(symbol, exchange):
     exchange = (exchange or "NSE").upper()
     if not symbol or len(symbol) > 30 or exchange not in ("NSE", "BSE"):
         raise ValueError("give a symbol and exchange NSE or BSE")
+    if symbol in it.INDEX_OPTIONS:
+        ix = it.INDEX_OPTIONS[symbol]
+        return {"symbol": symbol, "name": ix["name"], "exchange": "NSE", "series": "INDEX", "isin": "",
+                "industry": "", "bse_code": "", "intraday_allowed": True, "yahoo": ix["yahoo"], "index": True}
     for name in ("nifty200", "nse_all", "bse_all"):
         try:
             for i in universe(name)[0]:
@@ -138,6 +142,38 @@ def universe(name):
                 return it.merge_all(nse, bse), "saved lists"
             raise RuntimeError(str(e).splitlines()[0])
     return CACHE.get(("universe", name), 6 * 3600, load)
+
+
+def fo_lots():
+    return CACHE.get(("fo_lots",), 6 * 3600,
+                     lambda: it.load_fo_lots(snapshot=os.path.join(SNAPSHOTS, "fo_lots.json")))
+
+
+def fo_info(inst):
+    if inst["exchange"] != "NSE":
+        return None
+    try:
+        lots = fo_lots()
+    except Exception:
+        lots = None
+    lot = it.lot_size(inst["symbol"], lots)
+    if not lot:
+        return None
+    return {"lot": lot, "expiries": [e.isoformat() for e in it.expiries(inst["symbol"])],
+            "weekly": bool(it.INDEX_OPTIONS.get(inst["symbol"], {}).get("weekly"))}
+
+
+def intraday_returns(inst, cfg):
+    ib = it.completed_bars(intraday(inst, "60d")["bars"], "5m")
+    rets = it.log_returns([x["c"] for x in it.session_bars(ib)])
+    now = it.now_ist()
+    start = max(now, dt.datetime.combine(now.date(), dt.time(9, 30), it.IST))
+    flat = dt.datetime.combine(start.date(), it.parse_hhmm(cfg["intraday_flat_by"]), it.IST)
+    if start >= flat:   # after hours: plan a whole session
+        start = dt.datetime.combine(start.date(), dt.time(9, 30), it.IST)
+    steps = max(1, int((flat - start).total_seconds() // 300))
+    basis = "%d five-minute moves from the last 60 days, %d candles until %s" % (len(rets), steps, cfg["intraday_flat_by"])
+    return rets, steps, basis
 
 
 def rules_from_query():
@@ -209,6 +245,8 @@ def status():
 @app.get("/api/search-index")
 def search_index():
     seen, out, sources = set(), [], {}
+    for sym, ix in it.INDEX_OPTIONS.items():
+        out.append({"s": sym, "n": ix["name"], "e": "NSE", "i": 1, "x": 1})
     for name in ("nifty200", "nse_all", "bse_all"):
         try:
             items, src = universe(name)
@@ -288,7 +326,7 @@ def stock():
         "today": [[x["t"], x["o"], x["h"], x["l"], x["c"], x["v"]] for x in today],
         "stats": stock_stats(b), "setups": setups, "orb": orb,
         "ranges": it.price_ranges(closes), "hit_rate": it.range_hit_rate(closes),
-        "market": status["state"],
+        "market": status["state"], "fo": fo_info(inst), "index": bool(inst.get("index")),
     }, 60)
 
 
@@ -310,15 +348,7 @@ def plan():
     odds = None
     if p.get("target") and p["stop"] < p["entry"]:
         if mode == "intraday":
-            ib = it.completed_bars(intraday(inst, "60d")["bars"], "5m")
-            rets = it.log_returns([x["c"] for x in it.session_bars(ib)])
-            now = it.now_ist()
-            start = max(now, dt.datetime.combine(now.date(), dt.time(9, 30), it.IST))
-            flat = dt.datetime.combine(start.date(), it.parse_hhmm(cfg["intraday_flat_by"]), it.IST)
-            if start >= flat:   # after hours: plan a whole session
-                start = dt.datetime.combine(start.date(), dt.time(9, 30), it.IST)
-            steps = max(1, int((flat - start).total_seconds() // 300))
-            basis = "%d five-minute moves from the last 60 days, %d candles until %s" % (len(rets), steps, cfg["intraday_flat_by"])
+            rets, steps, basis = intraday_returns(inst, cfg)
         else:
             b, _ = daily(inst)
             rets = it.log_returns([x["c"] for x in b[-500:]])
@@ -328,6 +358,42 @@ def plan():
         if odds:
             odds["basis"] = basis
     p["odds"] = odds
+    return reply(p, 30)
+
+
+@app.get("/api/options")
+def options():
+    inst = instrument(request.args.get("symbol"), request.args.get("exchange"))
+    kind = request.args.get("kind", "CE").upper()
+    if kind not in ("CE", "PE"):
+        raise ValueError("kind must be CE or PE")
+    strike = request.args.get("strike", "ATM").upper()
+    if strike not in ("ATM", "ITM1", "OTM1"):
+        raise ValueError("strike must be ATM, ITM1 or OTM1")
+    entry, stop = num("entry", lo=0.05, hi=1e7), num("stop", lo=0.05, hi=1e7)
+    if entry is None or stop is None:
+        raise ValueError("entry and stop are needed")
+    target = num("target", None, 0, 1e7) or None
+    expiry = request.args.get("expiry")
+    expiry = dt.date.fromisoformat(expiry) if expiry else None
+    cfg, acct = rules_from_query()
+    info = fo_info(inst)
+    b, _ = daily(inst)
+    spot = intraday(inst)["meta"].get("price") or b[-1]["c"]
+    chain = None
+    if info and request.args.get("live", "1") == "1" and not DEMO:
+        chain = CACHE.get(("chain", inst["symbol"]), 60, lambda: it.nse_option_chain(inst["symbol"]))
+    p = it.option_plan(inst["symbol"], spot, [x["c"] for x in b], kind, entry, stop, target, strike, expiry,
+                       lot=info["lot"] if info else None, chain=chain, cfg=cfg, account=acct, exchange="NSE")
+    p["spot"] = spot
+    p["account"] = acct
+    p["odds"] = None
+    if p.get("u_target"):
+        rets, steps, basis = intraday_returns(inst, cfg)
+        o = it.path_odds(rets, p["u_entry"], p["u_stop"], p["u_target"], steps)
+        if o:
+            o["basis"] = basis
+        p["odds"] = o
     return reply(p, 30)
 
 

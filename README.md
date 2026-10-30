@@ -30,6 +30,7 @@ Change any of them: `python3 india-setup/indtrader.py config --set risk_per_trad
 |---|---|---|
 | `india-setup` | ready | Rules, IST market hours and holidays, Groww charges and breakeven, universes, price bars, account and loss-limit tracking |
 | `india-scanner` | ready | Scans a universe for intraday (opening-range breakout) and swing/positional setups (breakouts, bull flags, pullbacks, oversold bounces) |
+| `india-options` | ready | Buy-only call (CE) or put (PE) plan for an intraday idea on an F&O stock, Nifty or Bank Nifty: strike, expiry, premium, stop and target on the premium, lots that fit your risk after F&O charges, odds |
 | `india-plan` | next | Turns a setup into a full trade plan: entry, stop, target, exit time, quantity after charges (the logic is in the core and already used by the web app) |
 | `india-timemachine` | planned | Replays the plan 10,000 times from the stock's own bars and on every past day the setup fired |
 | `india-risk` | planned | PASS / BLOCK against your rules before you place anything |
@@ -44,6 +45,7 @@ A website on the same code, hosted free on Vercel: `app.py` (a small Flask API o
 
 - **Stock**: search any NSE/BSE stock to see its chart with 20/50/200-day averages, trend, RSI, 52-week position, which setups fire, and a trade plan for your rules drawn as a price ladder: target, buy-above, stop, quantity, net profit or loss after Groww charges, breakeven, exit time, how to place it in Groww, and the odds of target-first vs stop-first.
 - **Price ranges** for 1 week, 1 month and 3 months, with a check of how often past ranges held. These are ranges of possibility, **not predictions**.
+- **Options**: for F&O stocks, Nifty and Bank Nifty, a call (CE) or put (PE) plan on the same intraday levels: contract, expiry, premium, stop and target premiums, lots that fit your risk, and Groww's F&O charges. Buy only, never option selling. Premiums are live when NSE's option chain answers and estimated otherwise (the page says which).
 - **Scan**: swing, positional, pre-market and live opening-range scans over Nifty 50 / 200, Bank Nifty, all NSE, all BSE. Tap a hit to plan it.
 - **Market**: Nifty 50 and Bank Nifty today, the biggest Nifty 50 movers, market holidays.
 - **Rules**: capital, loss limit, risk per trade, losses and profits so far, saved on your phone.
@@ -56,6 +58,8 @@ A website on the same code, hosted free on Vercel: `app.py` (a small Flask API o
 4. Open the URL on your phone and choose **Add to Home Screen**.
 
 Every push to `main` redeploys automatically.
+
+**Staying inside the free plan.** Vercel's Hobby plan includes, per month and shared by every project on your account: 1,000,000 function calls, 4 CPU-hours, 360 GB-hours of memory and 100 GB of data. Going over pauses the feature for up to 30 days. This app is built to stay small: it asks for 1 GB of memory, answers are cached on Vercel's CDN (60 seconds for prices, 15 minutes for daily scans), search engines are told not to index it, and the password stops strangers from using it. Personal daily use (stock lookups, a few Nifty 200 scans) comes to roughly 5–10 GB-hours a month. Check **Usage** in the Vercel dashboard after the first week.
 
 If the deployed app can't download a stock list (NSE sometimes blocks cloud servers), run
 `python3 tools/snapshot_universes.py` on your computer, then commit and push `data/universe/`.

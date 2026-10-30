@@ -154,7 +154,8 @@ ul.plain li span:last-child { color: var(--ink-2); text-align: right; }
 .verdict { font-size: 14px; font-weight: 700; padding: 3px 10px; border-radius: 999px; }
 .verdict.ok { background: var(--up-soft); color: var(--up); }
 .verdict.no { background: var(--down-soft); color: var(--down); }
-.ladder { display: grid; grid-template-columns: 54px 1fr; gap: 0 14px; padding: 12px 16px 16px; min-height: 230px; }
+.ladder { display: grid; grid-template-columns: 54px 1fr; gap: 0 14px; padding: 12px 16px 16px; min-height: 250px; }
+.rung.t { padding-bottom: 10px; } .rung.s { padding-top: 10px; }
 .ladder .rw { grid-column: 1; grid-row: 1; background: var(--up-soft); border-top: 3px solid var(--up); border-radius: 10px 10px 0 0; }
 .ladder .en { grid-column: 1; grid-row: 2; height: 4px; align-self: center; background: var(--marigold); }
 .ladder .rk { grid-column: 1; grid-row: 3; background: var(--down-soft); border-bottom: 3px solid var(--down); border-radius: 0 0 10px 10px; }
@@ -166,7 +167,7 @@ ul.plain li span:last-child { color: var(--ink-2); text-align: right; }
 .rung .val { font-size: 18px; font-weight: 700; }
 .rung .net { font-size: 13px; font-weight: 600; }
 .rung.e .val { color: var(--marigold); }
-.rung > div:last-child { text-align: right; }
+.rung > div:last-child { text-align: right; white-space: nowrap; }
 .ladder:has(.en) .rw { margin-bottom: 0; }
 .kv { display: grid; grid-template-columns: auto 1fr; gap: 0; margin: 0; padding: 0 16px 6px; }
 .kv dt, .kv dd { padding: 8px 0; border-top: 1px solid var(--line); margin: 0; font-size: 14px; }
@@ -258,3 +259,14 @@ button.primary:disabled { opacity: .55; }
   .top { min-height: 52px; }
 }
 @media (prefers-reduced-motion: reduce) { * { transition: none !important; } }
+
+/* options */
+.opt-controls { display: grid; gap: 10px; }
+#opt-kind button { font-size: 13px; }
+#opt-kind button.on[data-k="CE"] { background: var(--up); }
+#opt-kind button.on[data-k="PE"] { background: var(--down); }
+.contract { font-size: 19px; font-weight: 800; letter-spacing: -.01em; }
+.src { font-size: 12px; font-weight: 600; padding: 2px 8px; border-radius: 999px; background: var(--marigold-soft); margin-left: 6px; vertical-align: 2px; }
+.src.live { background: var(--up-soft); color: var(--up); }
+.rung .u { font-size: 12px; color: var(--ink-3); }
+.fno-note { font-size: 13px; color: var(--ink-3); padding: 0 16px 14px; margin: 0; }

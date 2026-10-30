@@ -403,3 +403,84 @@ class Forecast(unittest.TestCase):
         self.assertAlmostEqual(o["target_first"] + o["stop_first"] + o["neither"], 100, places=0)
         near = it.path_odds(rets, 100, 99.9, 200, 10)
         self.assertGreater(near["stop_first"], 40)          # a stop 0.1% away gets hit a lot
+
+
+class Options(unittest.TestCase):
+    WHEN = dt.datetime(2026, 10, 30, 9, 45, tzinfo=it.IST)
+    CLOSES = [1160 * _m.exp(0.015 * _m.sin(i * 1.3) + 0.0002 * i) for i in range(300)]
+
+    def test_expiries(self):
+        self.assertEqual(it.expiries("NIFTY", dt.date(2026, 10, 30))[0], dt.date(2026, 11, 3))       # weekly Tuesday
+        self.assertEqual(it.expiries("RELIANCE", dt.date(2026, 10, 30))[0], dt.date(2026, 11, 23))   # 24 Nov is a holiday
+        self.assertEqual(it.expiries("BANKNIFTY", dt.date(2026, 11, 24))[0], dt.date(2026, 12, 29))
+        self.assertEqual(it.expiries("NIFTY", dt.date(2026, 11, 10))[0], dt.date(2026, 11, 10).replace(day=17))
+
+    def test_black_scholes(self):
+        c = it.bs_price(100, 100, 30 / 365, 0.2, "CE")
+        p = it.bs_price(100, 100, 30 / 365, 0.2, "PE")
+        self.assertAlmostEqual(c - p, 100 - 100 * _m.exp(-it.RISK_FREE * 30 / 365), places=6)   # put-call parity
+        self.assertTrue(0.45 < it.bs_delta(100, 100, 30 / 365, 0.2, "CE") < 0.6)
+        self.assertTrue(-0.55 < it.bs_delta(100, 100, 30 / 365, 0.2, "PE") < -0.4)
+
+    def test_option_charges(self):
+        c = it.option_order_charges(100, 65, "sell")
+        self.assertEqual(c["brokerage"], 20.0)
+        self.assertAlmostEqual(c["stt"], 9.75)                 # 0.15% of 6,500 premium
+        self.assertEqual(it.option_order_charges(100, 65, "buy")["stt"], 0.0)
+
+    def test_fo_lots_csv(self):
+        text = ("UNDERLYING,SYMBOL,NOV-26,DEC-26,JAN-27\n"
+                "Derivatives on Individual Securities,Symbol,,,\n"
+                "NIFTY 50,NIFTY,65,65,65\nRELIANCE INDUSTRIES LTD,RELIANCE,500,500,500\nNEW LTD,NEWCO,,1200,1200\n")
+        lots = it.parse_fo_lots(text)
+        self.assertEqual(lots, {"NIFTY": 65, "RELIANCE": 500, "NEWCO": 1200})
+
+    def plan(self, kind, e, s, lot=500, **k):
+        cfg = dict(it.DEFAULT_CONFIG, **k.pop("cfg", {}))
+        acct = it.account_state(cfg, [])
+        return it.option_plan("RELIANCE", 1163.9, self.CLOSES, kind, e, s, lot=lot, cfg=cfg, account=acct, when=self.WHEN, **k)
+
+    def test_ce_plan_shape(self):
+        p = self.plan("CE", 1164, 1160)
+        self.assertEqual(p["contract"], "RELIANCE 23 Nov 1160 CE")
+        self.assertEqual(p["premium_source"], "estimate")
+        self.assertGreater(p["premium_target"], p["premium_entry"])
+        self.assertLess(p["premium_stop"], p["premium_entry"])
+        self.assertEqual(p["status"], "blocked")                       # one lot is far over Rs 200 of risk
+        self.assertTrue(any("one lot loses" in b for b in p["blocks"]))
+        self.assertEqual(p["lots_shown"], 1)
+
+    def test_pe_plan_and_bigger_risk_fits(self):
+        p = self.plan("PE", 1159.9, 1164, cfg={"capital": 300000, "max_drawdown": 30000, "risk_per_trade": 3000})
+        self.assertEqual(p["contract"], "RELIANCE 23 Nov 1160 PE")
+        self.assertGreater(p["premium_target"], p["premium_entry"])     # a fall lifts the put
+        self.assertGreaterEqual(p["lots"], 1)
+        self.assertLessEqual(p["loss_at_stop"], 3000)
+
+    def test_wrong_side_stop(self):
+        self.assertIn("below the trigger", self.plan("CE", 1160, 1165)["blocks"][0])
+        self.assertIn("above the trigger", self.plan("PE", 1160, 1155)["blocks"][0])
+
+    def test_no_fo(self):
+        self.assertIn("F&O list", self.plan("CE", 1164, 1160, lot=None)["blocks"][0])
+
+    def test_live_chain_used(self):
+        chain = {"spot": 1163.9, "rows": [{"expiry": "2026-11-23", "strike": 1160.0, "CE": {"ltp": 31.5, "iv": 24.0}}]}
+        p = self.plan("CE", 1164, 1160, chain=chain)
+        self.assertEqual(p["premium_source"], "live")
+        self.assertEqual(p["premium_now"], 31.5)
+        self.assertEqual(p["iv_used"], 24.0)
+
+    def test_parse_chain(self):
+        raw = json.dumps({"records": {"underlyingValue": 1163.9, "data": [
+            {"strikePrice": 1160, "expiryDate": "23-Nov-2026", "CE": {"lastPrice": 31.5, "impliedVolatility": 24},
+             "PE": {"lastPrice": 25.1, "impliedVolatility": 25}}]}})
+        c = it.parse_option_chain(raw)
+        self.assertEqual(c["rows"][0]["expiry"], "2026-11-23")
+        self.assertEqual(c["rows"][0]["PE"]["ltp"], 25.1)
+
+    def test_down_odds(self):
+        o = it.path_odds(it.log_returns(self.CLOSES), 100, 102, 96, 20)
+        self.assertEqual(o["direction"], "down")
+        self.assertAlmostEqual(o["target_first"] + o["stop_first"] + o["neither"], 100, places=0)
+        self.assertIsNone(it.path_odds(it.log_returns(self.CLOSES), 100, 98, 97, 20))   # same side

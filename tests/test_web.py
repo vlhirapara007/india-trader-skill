@@ -91,3 +91,34 @@ class Web(unittest.TestCase):
             self.assertEqual(self.c.get("/api/ping").status_code, 200)
         finally:
             self.mod.PASSWORD = ""
+
+
+@unittest.skipIf(flask is None, "flask not installed")
+class WebOptions(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        os.environ.update(INDTRADER_DEMO="1", TRADER_NOW="2026-10-30T10:20", TRADER_DIR="/tmp/indtrader-webtest")
+        sys.path.insert(0, ROOT)
+        cls.mod = importlib.import_module("app")
+        cls.mod.CACHE.d[("fo_lots",)] = (9e18, {"RELIANCE": 500, "NIFTY": 65, "BANKNIFTY": 30})
+        cls.c = cls.mod.app.test_client()
+
+    def test_index_in_search_and_stock(self):
+        items = self.c.get("/api/search-index").get_json()["items"]
+        self.assertEqual(items[0]["s"], "NIFTY")
+        s = self.c.get("/api/stock?symbol=NIFTY&exchange=NSE").get_json()
+        self.assertTrue(s["index"])
+        self.assertEqual(s["fo"]["lot"], 65)
+        self.assertTrue(s["fo"]["weekly"])
+
+    def test_option_plan(self):
+        r = self.c.get("/api/options?symbol=RELIANCE&exchange=NSE&kind=PE&entry=1150&stop=1158")
+        self.assertEqual(r.status_code, 200, r.get_data(as_text=True)[:200])
+        p = r.get_json()
+        self.assertTrue(p["contract"].startswith("RELIANCE 23 Nov"))
+        self.assertEqual(p["odds"]["direction"], "down")
+        self.assertEqual(p["lot"], 500)
+
+    def test_no_options_stock(self):
+        p = self.c.get("/api/options?symbol=ITC&exchange=NSE&kind=CE&entry=412&stop=410").get_json()
+        self.assertIn("F&O list", p["blocks"][0])

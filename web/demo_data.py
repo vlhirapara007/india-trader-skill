@@ -92,6 +92,9 @@ def install(it):
         if "niftyindices" in url or "EQUITY_L" in url:
             return universe_csv() if "niftyindices" in url else "SYMBOL,NAME OF COMPANY, SERIES, ISIN NUMBER\n" + "\n".join(
                 "%s,%s,EQ,INE%06dA0101" % (s, n.replace(",", ""), i) for i, (s, n, _) in enumerate(DEMO_STOCKS))
+        if "fo_mktlots" in url:
+            return "UNDERLYING,SYMBOL,NOV-26\nNIFTY 50,NIFTY,65\nNIFTY BANK,BANKNIFTY,30\n" + "\n".join(
+                "%s,%s,%d" % (n.replace(",", ""), s, lot) for (s, n, _), lot in zip(DEMO_STOCKS, (500, 550, 175, 400, 700, 750, 1600, 800, 200, 625)))
         if "bseindia" in url:
             raise it.FetchError("demo: no BSE list")
         return chart(url, it.now_ist(), it.IST, it.is_trading_day)

@@ -66,11 +66,20 @@
       <h3 id="plan-h">Trade plan</h3>
       <form id="plan-form" class="plan-form" autocomplete="off">
         <div class="seg" id="mode" role="radiogroup" aria-label="Trade type">
-          <button type="button" data-m="intraday">Intraday</button><button type="button" data-m="swing" class="on">Swing</button><button type="button" data-m="positional">Positional</button>
+          <button type="button" data-m="intraday">Intraday</button><button type="button" data-m="swing" class="on">Swing</button><button type="button" data-m="positional">Positional</button><button type="button" data-m="options" id="mode-options" hidden>Options</button>
+        </div>
+        <div id="opt-controls" class="opt-controls" hidden>
+          <div class="seg" id="opt-kind" role="radiogroup" aria-label="Call or put">
+            <button type="button" data-k="CE" class="on">Call (CE): expect a rise</button><button type="button" data-k="PE">Put (PE): expect a fall</button>
+          </div>
+          <div class="fields two">
+            <label>Strike<select id="opt-strike"><option value="ATM">At the money</option><option value="ITM1">1 strike in the money</option><option value="OTM1">1 strike out of the money</option></select></label>
+            <label>Expiry<select id="opt-expiry"></select></label>
+          </div>
         </div>
         <div class="fields">
-          <label>Buy above<input id="f-entry" inputmode="decimal" required></label>
-          <label>Stop loss<input id="f-stop" inputmode="decimal" required></label>
+          <label><span id="l-entry">Buy above</span><input id="f-entry" inputmode="decimal" required></label>
+          <label><span id="l-stop">Stop loss</span><input id="f-stop" inputmode="decimal" required></label>
           <label>Target<input id="f-target" inputmode="decimal" placeholder="auto"></label>
         </div>
         <p class="hint" id="f-hint"></p>
